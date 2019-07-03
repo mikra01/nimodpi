@@ -20,6 +20,6 @@ before running, adjust  "/demo/democredentials.nim" (login and connection_string
 for the database you like to connect to. No ddl is executed. 
 
 ### Todo
-direct bindings completed; a nimish abstraction layer missing (WIP)
+direct bindings almost completed except SODA; a nimish abstraction layer missing (WIP)
 
 Comments, bug reports and PR´s appreciated.

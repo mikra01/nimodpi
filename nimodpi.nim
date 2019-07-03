@@ -271,12 +271,18 @@ cOverride:
                                 NativeBOOLEAN = DPI_NATIVE_TYPE_BOOLEAN,
                                 NativeROWID = DPI_NATIVE_TYPE_ROWID
   type
-    dpiPool* {.importc, header: "dpi.h".} = object
-    dpiLob* {.importc, header: "dpi.h".} = object
-    dpiObject* {.importc, header: "dpi.h".} = object
-    dpiRowid* {.importc, header: "dpi.h".} = object
-    dpiStmt* {.importc, header: "dpi.h".} = object
-    dpiObjectType* {.importc, header: "dpi.h".} = object
+    dpiPool* {.pure,final.} = object
+    dpiLob* {.pure,final.} = object
+    dpiObject* {.pure,final.} = object
+    dpiRowid* {.pure,final.} = object
+    dpiStmt* {.pure,final.} = object
+    dpiObjectType* {.pure,final.} = object
+    dpiVar* {.pure,final.} = object
+    dpiObjectAttr* {.pure,final.} = object
+    dpiSubscr* {.pure,final.} = object
+    dpiDeqOptions* {.pure,final.} = object
+    dpiEnqOptions* {.pure,final.} = object
+    dpiMsgProps* {.pure,final.} = object
 
     dpiErrorInfo* {.pure, final.} = object
       code*: int32
