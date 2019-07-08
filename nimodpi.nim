@@ -383,12 +383,12 @@ cOverride:
 
     # obj used for transferring statement information from ODPI-C
     dpiStmtInfo* {.pure, final.} = object
-      isQuery: cint
-      isPLSQL: cint
-      isDDL: cint
-      isDML: cint
-      statementType: dpiStatementType
-      isReturning: cint
+      isQuery*: cint
+      isPLSQL*: cint
+      isDDL*: cint
+      isDML*: cint
+      statementType*: dpiStatementType
+      isReturning*: cint
 
     dpiIntervalDS* {.pure, final.} = object
       days*: int32

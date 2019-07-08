@@ -5,7 +5,7 @@ import strutils
 # testsetup: win10,instantclient_19_3_x64
 # target: 12.2.0.1 PDB and 12.1.0.2(exadata,1n)
 # compiler: gcc version 5.1.0 (tdm64-1) 
-# TODO: tests against timesten
+# TODO: testing against timesten
 
 #[
  this demo contains three examples (no ddl executed)
@@ -16,287 +16,355 @@ import strutils
 ]#
 
 const
-  nlsLang: cstring = "WE8ISO8859P15"
+  nlsLang : cstring = "WE8ISO8859P15"
 
 include democredentials
 include demosql
 
-proc `$`* (p: var dpiTimestamp): string =
+proc `$`* ( p : var dpiTimestamp ): string =
   ## string representation of a timestamp column
   "dpiTimestamp: year:" & $p.year & " month:" & $p.month & " day:" & $p.day &
-    " minute:" & $p.minute & " second:" & $p.second & " fsecond:" &
-        $p.fsecond &
+    " minute:" & $p.minute & " second:" & $p.second & " fsecond:" & $p.fsecond &
     " tzHOffset:" & $p.tzHourOffset & " tzMinOffset:" & $p.tzMinuteOffset
 
-template `[]`(data: ptr dpiData, idx: int): ptr dpiData =
-  ## accesses the row-column by index
-  cast[ptr dpiData]((cast[int](data)) + (sizeof(dpiData)*idx))
+proc `$`*( p : var dpiStmtInfo) : string =
+  ## string repr of a statementInfo obj
+  "dpiStatementInfo: isQuery " & $p.isQuery & " isPlSql: " & $p.isPLSQL &
+    " isDDL: " & $p.isDDL & " isDML: " & $p.isDML & " isReturning: " & $p.isReturning &
+      " " & $DpiStmtType(p.statementType) 
 
-template toNimString (data: ptr dpiData): untyped =
-  var result: string = newString(data.value.asBytes.length)
-  copyMem(addr(result[0]), data.value.asBytes.ptr, result.len)
+
+template `[]`(data: ptr dpiData, idx : int): ptr dpiData =
+  ## accesses the row-column by index
+  cast[ptr dpiData]((cast[int](data)) + (sizeof(dpiData)*idx) )
+
+template toNimString (data : ptr dpiData) : untyped =
+  var result : string = newString(data.value.asBytes.length)          
+  copyMem(addr(result[0]),data.value.asBytes.ptr,result.len)
   result
 
-template onSuccessExecute(context: ptr dpiContext, toprobe: untyped,
-    body: untyped) =
+template onSuccessExecute(context : ptr dpiContext, toprobe : untyped, body: untyped) =
   ## template to wrap the boilerplate errorinfo code
-  var err: dpiErrorInfo
+  var err  : dpiErrorInfo
   if toprobe < DpiResult.SUCCESS.ord:
-    dpiContext_getError(context, err.addr)
+    dpiContext_getError(context,err.addr)
     echo $err
   else:
     body
 
+type 
+  ColumnBuffer = object 
+    colVar : ptr dpiVar
+    buffer : ptr dpiData
+    dpiresult : DpiResult   # contains errorcode and msg
+
 type
-  Column = object
-    colVar: ptr dpiVar
-    buffer: ptr dpiData
-    dpiresult: DpiResult
+  PreparedStatement = object
+    nativeStatement : ptr dpiStmt 
+    statementInfo : dpiStmtInfo # int dpiStmt_getInfo(dpiStmt *stmt, dpiStmtInfo *info
+    columnDataTypes : seq[dpiQueryInfo]
+    columnBuffers : seq[ColumnBuffer]    
+    fetchArraySize : uint32
+    columnCount : uint32
+    # todo: populate object through introspection
+
+template `[]`(pstmt : var PreparedStatement, idx : int): ptr dpiData =
+      pstmt.columnBuffers[idx].buffer
+ 
+proc `$`*( p : var PreparedStatement ) : string =
+  "preparedStmt: colcount: " & $p.columnCount & " " & $p.columnDataTypes
+    
+template newVar(conn : ptr dpiConn, otype : DpiOracleTypes, ntype : DpiNativeCTypes, arrSize : int, colLength : uint32,
+                column : ptr ColumnBuffer) =
+  ## initialises a new dpiVar and populates the ColumnBuffer-type
+  column.dpiresult = DpiResult(dpiConn_newVar(conn,cast[dpiOracleTypeNum](otype.ord),      # db coltype
+                                   cast[dpiNativeTypeNum](ntype.ord),                     # client coltype
+                                   arrSize.uint32,                 # max array size
+                                   colLength,                      # size of buffer
+                                   0,                              # sizeIsBytes 
+                                   0,                              # isArray 
+                                   nil,                            # objType
+                                   column.colVar.addr,             # ptr to the variable
+                                   column.buffer.addr              # ptr to buffer array
+                           ))
+
+template releaseBuffer( prepStmt : var PreparedStatement ) =
+  ## releases the internal buffers. to reinit initMetadataAndAllocBuffersAfterExecute must
+  ## be used
+  for i in countup(0,prepStmt.columnBuffers.len-1):
+    discard dpiVar_release(prepStmt.columnBuffers[i].colVar)
 
 
-template newVar(conn: ptr dpiConn, otype: DpiOracleTypes,
-    ntype: DpiNativeCTypes, arrSize: int, colLength: int,
-                column: ptr Column) =
-  ## initialises a new dpiVar and populates the Column-type
-  column.dpiresult = DpiResult(dpiConn_newVar(conn, otype.ord, # db coltype
-    ntype.ord, # client coltype
-  arrSize.uint32, # max array size
-    colLength, # size of buffer
-    0, # sizeIsBytes
-    0, # isArray
-    nil, # objType
-    column.colVar.addr, # ptr to the variable
-    column.buffer.addr        # ptr to buffer array
-  ))
+template initMetadataAndAllocBuffersAfterExecute( ctx : ptr dpiContext, conn : ptr dpiConn, prepStmt : var PreparedStatement ) =
+  ## fetches the statements metadata after execute. 
+  ## if the statement returns any rows the internal buffer
+  ## is initialised according to the internal fetchArraySize. 
+  ## TODO: handle refcursor differently (we can not introspect the refcursor till it's fetched)
+  ## TODO: if numeric exceeds 64bit handle as string
+  discard dpiStmt_getFetchArraySize(prepStmt.nativeStatement,prepStmt.fetchArraySize.addr)
+  discard dpiStmt_getNumQueryColumns(prepStmt.nativeStatement,prepStmt.columnCount.addr)
+  if dpiStmt_getInfo(prepstatement.nativeStatement,prepStmt.statementInfo.addr) == DpiResult.SUCCESS.ord:
+    echo $prepStmt.statementInfo
+    if prepStmt.statementInfo.isQuery == 1.cint:
+      prepStmt.columnDataTypes = newSeq[dpiQueryInfo](prepStmt.columnCount)
+      prepStmt.columnBuffers = newSeq[ColumnBuffer](prepStmt.columnCount)
 
-template isNull(dat: ptr dpiData): bool =
+      var colinfo : dpiQueryInfo
+
+      #introspect resultset
+      for i in countup(1,prepStmt.columnCount.int):
+        if dpiStmt_getQueryInfo(prepStmt.nativeStatement,i.uint32,colinfo.addr) < DpiResult.SUCCESS.ord:
+          echo "error_introspect_column " & $i
+        else:
+          prepStmt.columnDataTypes[i-1] = colinfo
+          echo $DpiOracleTypes(colinfo.typeinfo.oracleTypeNum) & 
+            " clientsize: " & $colinfo.typeinfo.clientSizeInBytes.uint32
+      
+      for i in countup(0,prepStmt.columnDataTypes.len-1):
+        var cbuf : ColumnBuffer
+        let otype = DpiOracleTypes(prepStmt.columnDataTypes[i].typeInfo.oracleTypeNum)
+        let ntype = DpiNativeCTypes(prepStmt.columnDataTypes[i].typeInfo.defaultNativeTypeNum)
+        echo $otype & " " & $ntype
+               # TODO: construct the dpiVars out of dpiQueryInfo
+        var size : uint32
+        case ntype
+          of NativeINT64,NativeUINT64,NativeFLOAT,NativeDouble,NativeTIMESTAMP,NativeINTERVAL_DS,
+             NativeINTERVAL_YM,NativeBOOLEAN,NativeROWID:
+               size = 1
+               echo "scale: " & $prepStmt.columnDataTypes[i].typeInfo.scale
+               echo " precision : " & $prepStmt.columnDataTypes[i].typeInfo.precision
+          of NativeBYTES:
+               size = prepStmt.columnDataTypes[i].typeInfo.sizeInChars
+               if size == 0:
+                 # non character data
+                 size = prepStmt.columnDataTypes[i].typeInfo.clientSizeInBytes             
+          else:
+            echo "unsupportedType at idx: " & $i
+            # TODO: proper error handling
+            break     
+        if i == 4:
+          newVar(conn, otype,DpiNativeCTypes.NativeBYTES,(prepStmt.fetchArraySize ).int ,40,cbuf.addr)
+          # manually set native type: string       
+        else: 
+          newVar(conn, otype,ntype,(prepStmt.fetchArraySize ).int , size,cbuf.addr)
+        # TODO remove template
+        if hasError(cbuf):
+          echo "error_newvar at column: " & $(i+1)
+          break
+        else:
+          prepStmt.columnBuffers[i] = cbuf
+      
+    
+      for i in countup(0,prepStmt.columnBuffers.len-1):
+        if dpiStmt_define(prepStmt.nativeStatement,(i+1).uint32,
+             prepStmt.columnBuffers[i].colVar) == DpiResult.FAILURE.ord:
+          var err  : dpiErrorInfo
+          dpiContext_getError(ctx,err.addr)
+          echo $err
+          break
+
+template isNull(dat : ptr dpiData) : bool =
   if dat.isNull == 1.cint:
     true
   else:
     false
 
-template hasError(colvar: var Column): bool =
-  if colvar.dpiresult == DpiResult.SUCCESS:
-    false
-  else:
+template hasError( colvar : var ColumnBuffer ) : bool =
+  if colvar.dpiresult < DpiResult.SUCCESS:
     true
+  else:
+    false  
 
-template hasError(context: ptr dpiContext, toprobe: untyped): bool =
+template hasError(context : ptr dpiContext, toprobe : untyped) : bool =
   if toprobe < DpiResult.SUCCESS.ord:
     true
   else:
     false
-
-var context: ptr dpiContext
-var errorinfo: dpiErrorInfo
-var versionInfo: dpiVersionInfo
-var commonParams: dpiCommonCreateParams
+ 
+var context : ptr dpiContext
+var errorinfo : dpiErrorInfo
+var versionInfo : dpiVersionInfo
+var commonParams : dpiCommonCreateParams
 # globals
 
-let errno = dpiContext_create(DPI_MAJOR_VERSION, DPI_MINOR_VERSION, addr(
-    context), addr(errorinfo))
+let errno = dpiContext_create(DPI_MAJOR_VERSION,DPI_MINOR_VERSION,addr(context),addr(errorinfo))
 if errno == DpiResult.SUCCESS.ord:
   echo "context_created"
-  discard dpiContext_initCommonCreateParams(context, commonParams.addr)
+  discard dpiContext_initCommonCreateParams(context,commonParams.addr)
   commonParams.encoding = nlsLang
 else:
   echo "unable to create context: " & $errorinfo
+ 
+discard dpiContext_getClientVersion(context,addr(versionInfo))
+echo "client_version: " & $versionInfo.versionNum 
 
-discard dpiContext_getClientVersion(context, addr(versionInfo))
-echo "client_version: " & $versionInfo.versionNum
-
-var conn: ptr dpiConn
+var conn : ptr dpiConn
 
 # connectionstrings could be from tns definitions (tnsnames.ora) or provided as param
-onSuccessExecute(context, dpiConn_create(context, oracleuser, oracleuser.len,
-    pw, pw.len, connString, connString.len, commonParams.addr, nil, addr(conn))):
+onSuccessExecute(context,dpiConn_create(context,oracleuser,oracleuser.len,pw,pw.len,connString,connString.len,commonParams.addr,nil, addr(conn))):
   echo "connection created"
-  var prepStatement: ptr dpiStmt
-  var numCols: uint32
-  var numRows: uint64
+  var prepStatement : ptr dpiStmt
+  var numCols : uint32
+  var numRows : uint64
 
-  let query = "select 'hello nim! ' from dual ".cstring
+  let query ="select 'hello nim! ' from dual ".cstring
   let scrollAble = 0.cint
   let tagLength = 0.uint32
 
   # simple select example
-  onSuccessExecute(context, dpiConn_prepareStmt(conn, scrollAble, query,
-      query.len.uint32, nil, tagLength,
+  onSuccessExecute(context,dpiConn_prepareStmt(conn,scrollAble,query,query.len.uint32,nil,tagLength,
             prepStatement.addr)):
-
-    onSuccessExecute(context, dpiStmt_execute(prepStatement,
-        DpiModeExec.DEFAULTMODE.ord, numCols.addr)):
-      echo "num_cols_returned: " & $numCols
+  
+    onSuccessExecute(context,dpiStmt_execute(prepStatement,DpiModeExec.DEFAULTMODE.ord, numCols.addr)):
+      echo "num_cols_returned: " & $numCols 
       # fetch the row to client
-      var bufferRowIndex: uint32
-      var found: cint
-
-      onSuccessExecute(context, dpiStmt_fetch(prepStatement, found.addr,
-          bufferRowIndex.addr)):
+      var bufferRowIndex : uint32
+      var found : cint
+      
+      onSuccessExecute(context,dpiStmt_fetch(prepStatement, found.addr, bufferRowIndex.addr)):
         # fetch one row
-        var stringColVal: ptr dpiData
-        var nativeTypeNum: dpiNativeTypeNum
+        var stringColVal : ptr dpiData
+        var nativeTypeNum : dpiNativeTypeNum
 
-        onSuccessExecute(context, dpiStmt_getQueryValue(prepStatement, 1,
-            nativeTypeNum.addr, stringColVal.addr)):
+        onSuccessExecute(context,dpiStmt_getQueryValue(prepStatement,1,nativeTypeNum.addr, stringColVal.addr)):
           if stringColVal.isNull == 0:
             echo "encoding: " & $stringColVal.value.asBytes.encoding
             echo "colval: " & toNimString(stringColVal)
+            
+            var queryInfo : dpiQueryInfo
 
-            var queryInfo: dpiQueryInfo
-
-            onSuccessExecute(context, dpiStmt_getQueryInfo(prepStatement, 1,
-                queryInfo.addr)):
-              echo "dbtype: " & $DpiOracleTypes(
-                  queryInfo.typeInfo.oracleTypeNum) &
+            onSuccessExecute(context,dpiStmt_getQueryInfo(prepStatement,1, queryInfo.addr)):
+              echo  "dbtype: " & $DpiOracleTypes(queryInfo.typeInfo.oracleTypeNum) &
                       " size_in_chars " & $queryInfo.typeInfo.sizeInChars
-
+              
           else:
             echo "val_is_null"
-
-          discard dpiStmt_getRowCount(prepStatement, numRows.addr)
+        
+          discard dpiStmt_getRowCount(prepStatement, numRows.addr )
           echo "prepStatement: num_rows_fetched: " & $numRows
-
-    var prepStatement2: ptr dpiStmt
+  
+    var prepStatement2 : ptr dpiStmt  
 
     onSuccessExecute(context,
-                       dpiConn_prepareStmt(conn, scrollAble, testTypesSql,
-                           testTypesSql.len.uint32,
-                                           nil, tagLength, prepStatement2.addr)):
-    # example fetching multiple rows
-      onSuccessExecute(context, dpiStmt_execute(prepStatement2,
-          DpiModeExec.DEFAULTMODE.ord, numCols.addr)):
-        var colcount: uint32
-        discard dpiStmt_getNumQueryColumns(prepStatement2, colcount.addr)
-        echo "num_query_cols " & $colcount
+                       dpiConn_prepareStmt(conn,scrollAble,testTypesSql,testTypesSql.len.uint32,
+                                           nil,tagLength,prepStatement2.addr)):
+      #eval fetch_array_size
+      var arrSize : uint32
+      discard dpiStmt_getFetchArraySize(prepStatement2,arrSize.addr)
+      echo "fetch_array_size: " & $arrSize
+      # int dpiStmt_setFetchArraySize(dpiStmt *stmt, uint32_t arraySize)
+      # example fetching multiple rows
+      # metadata can be retrieved with dpiStmt_getQueryInfo() after execute.
+      onSuccessExecute(context,dpiStmt_execute(prepStatement2,DpiModeExec.DEFAULTMODE.ord, numCols.addr)):
 
-        var colinfo: dpiQueryInfo
-        var typeinfo: dpiDataTypeInfo
+        var prepStatement : PreparedStatement
+        prepStatement.nativeStatement = prepStatement2
 
-        #introspect resultset
-        for i in countup(1, colcount.int):
-          if dpiStmt_getQueryInfo(prepStatement2, i.uint32,
-              colinfo.addr) < DpiResult.SUCCESS.ord:
-            echo "error_introspect_column " & $i
-          else:
-            echo $DpiOracleTypes(colinfo.typeinfo.oracleTypeNum) &
-                  " clientsize: " & $colinfo.typeinfo.clientSizeInBytes.uint32
+        initMetadataAndAllocBuffersAfterExecute(context, conn,prepstatement)
+        echo "num_query_cols " & $prepStatement.columnCount
+        
+        var moreRows : cint
+        var bufferRowIndex : uint32
+        var rowsFetched : uint32 
 
-        type
-          ColArray = array[0..3, Column]
-        var columns: ColArray
-        # TODO: construct the dpiVars out of dpiQueryInfo
-        newVar(conn, DpiOracleTypes.OTVARCHAR, DpiNativeCTypes.NativeBYTES,
-            100, 10, columns[0].addr)
-        if hasError(columns[0]):
-          echo "error_newvar_col1"
-        newVar(conn, DpiOracleTypes.OTNATIVE_DOUBLE,
-            DpiNativeCTypes.NativeDOUBLE, 100, 1, columns[1].addr)
-        if hasError(columns[1]):
-          echo "error_newvar_col2"
-        newVar(conn, DpiOracleTypes.OTRAW, DpiNativeCTypes.NativeBYTES, 100,
-            10, columns[2].addr)
-        if hasError(columns[2]):
-          echo "error_newvar_col3"
-        newVar(conn, DpiOracleTypes.OTTIMESTAMP_TZ,
-            DpiNativeCTypes.NativeTIMESTAMP, 100, 1, columns[3].addr)
-        if hasError(columns[3]):
-          echo "error_newvar_col4"
-
-        for i in low(columns) .. high(columns):
-          if hasError(context, dpiStmt_define(prepStatement2, (i+1).uint32,
-              columns[i].colVar)):
-            var err: dpiErrorInfo
-            dpiContext_getError(context, err.addr)
-            break
-
-        var moreRows: cint
-        var bufferRowIndex: uint32
-        var rowsFetched: uint32
-
-        onSuccessExecute(context, dpiStmt_fetchRows(prepStatement2,
+        onSuccessExecute(context,dpiStmt_fetchRows(prepStatement2,
                                                    50.uint32,
                                                    bufferRowIndex.addr,
                                                    rowsFetched.addr,
                                                    moreRows.addr)):
           # fetchRows gives you a spreadsheet-like access to the resultset
           echo "prepStatement2: num_rows_fetched: " & $rowsFetched
-
-          echo "col1: " & toNimString(columns[0].buffer)
-          echo "col1: " & $dpiData_getDouble(columns[1].buffer)
+          
+          echo "col1: " & toNimString(prepStatement[0][0])        
+          echo "col1: " & $dpiData_getDouble(prepStatement[1][0]) 
           # remark: big numbers are exposed as client type: string (out of scope of this demo)
-          echo "col2: " & toNimString(columns[0].buffer[1])
-          echo "col2: " & $dpiData_getDouble(columns[1].buffer[1])
+          echo "col2: " & toNimString(prepStatement[0][1]) 
+          echo "col2: " & $dpiData_getDouble(prepStatement[1][1])            
           # raw column
-          echo "col3: " & toHex(toNimString(columns[2].buffer))
-          echo "col3: " & toHex(toNimString(columns[2].buffer[1]))
+          echo "col3: " & toHex(toNimString(prepStatement[2][0]))
+          echo "col3: " & toHex(toNimString(prepStatement[2][1]))
+          
           # tstamp column
-          var tstamp: dpiTimestamp = cast[dpiTimestamp](columns[
-              3].buffer.value.asTimestamp)
+          var tstamp : dpiTimestamp = cast[dpiTimestamp](prepStatement[3][0].value.asTimestamp)          
           echo "col4: " & $tstamp
 
-          if isNull(columns[3].buffer[1]):
+          if isNull(prepStatement[3][1]):
             echo "col4: col missing value "
           else:
-            tstamp = cast[dpiTimestamp](columns[3].buffer[
-                1].value.asTimestamp)
+            tstamp = cast[dpiTimestamp](prepStatement[3][1].value.asTimestamp)
             echo "col4: " & $tstamp
+          echo "col5: " & toNimString(prepStatement[4][0]) 
+          echo "col5: " & toNimString(prepStatement[4][1]) 
+          # TODO: probe if it's a big_number  
 
-        for i in low(columns) .. high(columns):
-          discard dpiVar_release(columns[i].colVar)
-
-    discard dpiStmt_release(prepStatement2)
+        releaseBuffer(prepStatement)
+     
+    discard dpiStmt_release(prepStatement2)  
   discard dpiStmt_release(prepStatement)
 
   # refCursors example taken out of DemoRefCursors.c
   echo "executing ref_cursor example "
   onSuccessExecute(context,
-                   dpiConn_prepareStmt(conn, scrollAble, testRefCursor,
-                       testRefCursor.len.uint32,
-                                       nil, tagLength, prepStatement.addr)):
+                   dpiConn_prepareStmt(conn,scrollAble,testRefCursor,testRefCursor.len.uint32,
+                                       nil,tagLength,prepStatement.addr)):
+  
+    var refCursorCol : ColumnBuffer
 
-    var refCursorCol: Column
-
-    newVar(conn, DpiOracleTypes.OTSTMT, DpiNativeCTypes.NATIVESTMT, 1, 0,
-        refCursorCol.addr)
+    newVar(conn,DpiOracleTypes.OTSTMT, DpiNativeCTypes.NATIVESTMT,1,0,refCursorCol.addr)
     if hasError(refCursorCol):
       echo "error_init_refcursor_column"
 
-    if dpiStmt_bindByPos(prepStatement, 1,
-        refCursorCol.colvar) < DpiResult.SUCCESS.ord:
+    if dpiStmt_bindByPos(prepStatement,1,refCursorCol.colvar) < DpiResult.SUCCESS.ord:
       echo "error_binding_refcursor_param"
 
-    onSuccessExecute(context, dpiStmt_execute(prepStatement,
-        DpiModeExec.DEFAULTMODE.ord, numCols.addr)):
+    onSuccessExecute(context,dpiStmt_execute(prepStatement,DpiModeExec.DEFAULTMODE.ord, numCols.addr)):
+      # introspect refCursor
+      var colcount : uint32
+      discard dpiStmt_getNumQueryColumns(prepStatement,colcount.addr)
+      echo "refcursor: num_query_cols " & $colcount
+      var colinfo : dpiQueryInfo
+      var typeinfo : dpiDataTypeInfo
+      var statementInfo : dpiStmtInfo
+      if dpiStmt_getInfo(prepStatement,statementInfo.addr) == DpiResult.SUCCESS.ord:
+        echo $statementInfo 
+
+      #introspect resultset
+      for i in countup(1,colcount.int):
+        if dpiStmt_getQueryInfo(prepStatement,i.uint32,colinfo.addr) < DpiResult.SUCCESS.ord:
+          echo "error_introspect_column " & $i
+        else:
+          echo $DpiOracleTypes(colinfo.typeinfo.oracleTypeNum) & 
+            " clientsize: " & $colinfo.typeinfo.clientSizeInBytes.uint32
+      # a refcursor could not be introspected by the statementInfo nor throught the bound variable names
+      # we need the metadata (refcursor) from the caller
+        
       discard dpiStmt_release(prepStatement)
 
       prepStatement = refCursorCol.buffer.value.asStmt # fetch ref_cursor
 
       # fetch cursor content
-      var bufferRowIndex: uint32
-      var found: cint
-      var stringColVal: ptr dpiData
-      var nativeTypeNum: dpiNativeTypeNum
+      var bufferRowIndex : uint32
+      var found : cint
+      var stringColVal : ptr dpiData
+      var nativeTypeNum : dpiNativeTypeNum
 
-      for i in countup(1, 2):
+      for i in countup(1,2):
         onSuccessExecute(context,
-                         dpiStmt_fetch(prepStatement, found.addr,
-                             bufferRowIndex.addr)):
+                         dpiStmt_fetch(prepStatement,found.addr, bufferRowIndex.addr)):
           if found != 1:
             break
           onSuccessExecute(context,
-                            dpiStmt_getQueryValue(prepStatement, 1,
-                                nativeTypeNum.addr, stringColVal.addr)):
+                            dpiStmt_getQueryValue(prepStatement,1,nativeTypeNum.addr,stringColVal.addr)):
             if stringColVal.isNull == 0:
               echo "encoding: " & $stringColVal.value.asBytes.encoding
               echo "ref_cursor_val: " & toNimString(stringColVal)
             else:
-              echo "ref_cursor value is null"
-
+              echo "ref_cursor value is null" 
+ 
       discard dpiVar_release(refCursorCol.colVar)
 
   discard dpiConn_release(conn)
 
 # TODO: blob,execute pl/sql, execute script , utilize poolableConnection
-
+  
 discard dpiContext_destroy(context)
