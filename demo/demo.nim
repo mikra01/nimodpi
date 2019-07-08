@@ -1,6 +1,6 @@
 import ../nimodpi
-import os
 import strutils
+import os
 
 # testsetup: win10,instantclient_19_3_x64
 # target: 12.2.0.1 PDB and 12.1.0.2(exadata,1n)
@@ -11,7 +11,7 @@ import strutils
  this demo contains three examples (no ddl executed)
    - setting clients encoding 
    - simple fetch
-   - fetch with fetchRows (additional types double,raw,timestamp)
+   - fetch with fetchRows (additional types double,raw,timestamp,big_number as string)
    - ref_cursor example 
 ]#
 
@@ -35,7 +35,7 @@ proc `$`*( p : var dpiStmtInfo) : string =
 
 
 template `[]`(data: ptr dpiData, idx : int): ptr dpiData =
-  ## accesses the row-column by index
+  ## accesses the cell(row) of the column by index
   cast[ptr dpiData]((cast[int](data)) + (sizeof(dpiData)*idx) )
 
 template toNimString (data : ptr dpiData) : untyped =
@@ -66,10 +66,10 @@ type
     columnBuffers : seq[ColumnBuffer]    
     fetchArraySize : uint32
     columnCount : uint32
-    # todo: populate object through introspection
 
 template `[]`(pstmt : var PreparedStatement, idx : int): ptr dpiData =
-      pstmt.columnBuffers[idx].buffer
+  ## access the columnBuffer by index
+  pstmt.columnBuffers[idx].buffer
  
 proc `$`*( p : var PreparedStatement ) : string =
   "preparedStmt: colcount: " & $p.columnCount & " " & $p.columnDataTypes
@@ -368,3 +368,5 @@ onSuccessExecute(context,dpiConn_create(context,oracleuser,oracleuser.len,pw,pw.
 # TODO: blob,execute pl/sql, execute script , utilize poolableConnection
   
 discard dpiContext_destroy(context)
+
+
