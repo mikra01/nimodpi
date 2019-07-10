@@ -1,13 +1,15 @@
 # nimodpi
 Oracle ODPI-C wrapper for Nim
 
-## [ODPI-C Documentation](https://oracle.github.io/odpi/)
+## [Oracle ODPI-C Documentation](https://oracle.github.io/odpi/)
  
 ### dependencies
-nimterop 
+- Oracle Instant Client (see ODPI-C Documentation for details)
+- nimterop 
 
 ### how to install
-just import "nimodpi" within your project. 
+just import "nimodpi" within your project. See /demo/demo.nim for an example.
+The subdir /demo also contains an example how sqlplus could be utilised for script execution.
 
 at the moment only static linking supported.
 nimterop downloads the ODPI-C sourcecode into subdirectory /build, 
