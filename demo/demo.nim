@@ -1,6 +1,7 @@
 import ../nimodpi
 import strutils
 import os
+import times
 
 # testsetup: win10,instantclient_19_3_x64
 # target: 12.2.0.1 PDB and 12.1.0.2(exadata,1n)
@@ -24,10 +25,18 @@ include demosql
 
 proc `$`* (p: var dpiTimestamp): string =
   ## string representation of a timestamp column
-  "dpiTimestamp: year:" & $p.year & " month:" & $p.month & " day:" & $p.day &
-    " minute:" & $p.minute & " second:" & $p.second & " fsecond:" &
-        $p.fsecond &
+  "dpiTimestamp: year:" & $p.year & " month:" & $p.month & " day:" & $p.day & 
+    " hour: " & $p.hour & " minute:" & $p.minute & " second:" & $p.second & 
+    " fsecond:" & $p.fsecond &
     " tzHOffset:" & $p.tzHourOffset & " tzMinOffset:" & $p.tzMinuteOffset
+
+proc toDateTime(p : ptr dpiTimestamp ) : DateTime =
+  ## TODO: timezone support
+  let utcoffset : int = p.tzHourOffset*3600.int + p.tzMinuteOffset*60 
+  proc utcTzInfo(time: Time): ZonedTime =
+    ZonedTime(utcOffset: utcoffset, isDst: false, time: time)
+  initDateTime(p.day,Month(p.month),p.year,p.hour,p.minute,p.second,p.fsecond, 
+    newTimezone("Etc/UTC", utcTzInfo, utcTzInfo))
 
 proc `$`*(p: var dpiStmtInfo): string =
   ## string repr of a statementInfo obj
@@ -140,6 +149,7 @@ template initMetadataAndAllocBuffersAfterExecute(ctx: ptr dpiContext,
         let ntype = DpiNativeCTypes(prepStmt.columnDataTypes[
             i].typeInfo.defaultNativeTypeNum)
         echo $otype & " " & $ntype
+        echo "oci_type_code " & $prepStmt.columnDataTypes[i].typeInfo.ociTypeCode
           # TODO: construct the dpiVars out of dpiQueryInfo
         var size: uint32
         case ntype
@@ -160,13 +170,18 @@ template initMetadataAndAllocBuffersAfterExecute(ctx: ptr dpiContext,
             # TODO: proper error handling
             break
         if i == 4:
+          echo "size_col_4 chars " & $prepStmt.columnDataTypes[i].typeInfo.sizeInChars
+          echo "size_col_4 clientsize " & $prepStmt.columnDataTypes[i].typeInfo.clientSizeInBytes
+          echo "size_col_4 dbsize " & $prepStmt.columnDataTypes[i].typeInfo.dbSizeInBytes
+          # these values are only populated if varchar2 type. we have a number type who¨s
+          # precision is exceeding 64bit 
           newVar(conn, otype, DpiNativeCTypes.NativeBYTES,
-              (prepStmt.fetchArraySize).int, 40, cbuf.addr)
+              (prepStmt.fetchArraySize).int,1, cbuf.addr)
           # manually set native type: string
         else:
           newVar(conn, otype, ntype, (prepStmt.fetchArraySize).int, size,
               cbuf.addr)
-        # TODO remove template
+        # TODO remove template newVar
         if hasError(cbuf):
           echo "error_newvar at column: " & $(i+1)
           break
@@ -224,11 +239,12 @@ var conn: ptr dpiConn
 onSuccessExecute(context, dpiConn_create(context, oracleuser, oracleuser.len,
     pw, pw.len, connString, connString.len, commonParams.addr, nil, addr(conn))):
   echo "connection created"
+  
   var prepStatement: ptr dpiStmt
   var numCols: uint32
   var numRows: uint64
 
-  let query = "select 'hello nim! ' from dual ".cstring
+  let query = "select 'hello äöü ' from dual ".cstring
   let scrollAble = 0.cint
   let tagLength = 0.uint32
 
@@ -270,6 +286,8 @@ onSuccessExecute(context, dpiConn_create(context, oracleuser, oracleuser.len,
           discard dpiStmt_getRowCount(prepStatement, numRows.addr)
           echo "prepStatement: num_rows_fetched: " & $numRows
 
+
+    
     var prepStatement2: ptr dpiStmt
 
     onSuccessExecute(context,
@@ -304,24 +322,24 @@ onSuccessExecute(context, dpiConn_create(context, oracleuser, oracleuser.len,
           # fetchRows gives you a spreadsheet-like access to the resultset
           echo "prepStatement2: num_rows_fetched: " & $rowsFetched
 
-          echo "col1: " & toNimString(prepStatement[0][0])
-          echo "col1: " & $dpiData_getDouble(prepStatement[1][0])
-          echo "col2: " & toNimString(prepStatement[0][1])
+          echo "col1: " & toNimString(prepStatement[0][0]) # column/row
+          echo "col2: " & $dpiData_getDouble(prepStatement[1][0])
+          echo "col1: " & toNimString(prepStatement[0][1])
           echo "col2: " & $dpiData_getDouble(prepStatement[1][1])
           # raw column
           echo "col3: " & toHex(toNimString(prepStatement[2][0]))
           echo "col3: " & toHex(toNimString(prepStatement[2][1]))
 
           # tstamp column
-          var tstamp: dpiTimestamp = cast[dpiTimestamp](prepStatement[3][
-              0].value.asTimestamp)
-          echo "col4: " & $tstamp
+          let tstamp: ptr dpiTimestamp = cast[ptr dpiTimestamp](prepStatement[3][
+              0].value.asTimestamp.addr)
+          echo " dateTime : " & $toDateTime(tstamp)
 
           if isNull(prepStatement[3][1]):
             echo "col4: col missing value "
           else:
-            tstamp = cast[dpiTimestamp](prepStatement[3][1].value.asTimestamp)
-            echo "col4: " & $tstamp
+            var tstamp2 : ptr dpiTimestamp = cast[ptr dpiTimestamp](prepStatement[3][1].value.asTimestamp.addr)
+            echo "col4: " & $toDateTime(tstamp2)
           echo "col5: " & toNimString(prepStatement[4][0])
           echo "col5: " & toNimString(prepStatement[4][1])
           # output big_numbers as string
