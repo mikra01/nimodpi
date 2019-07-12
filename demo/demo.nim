@@ -31,7 +31,7 @@ proc `$`* (p: var dpiTimestamp): string =
     " tzHOffset:" & $p.tzHourOffset & " tzMinOffset:" & $p.tzMinuteOffset
 
 proc toDateTime(p : ptr dpiTimestamp ) : DateTime =
-  ## TODO: timezone support
+  ## dpiTimestamp to DateTime
   let utcoffset : int = p.tzHourOffset*3600.int + p.tzMinuteOffset*60 
   proc utcTzInfo(time: Time): ZonedTime =
     ZonedTime(utcOffset: utcoffset, isDst: false, time: time)
@@ -169,15 +169,14 @@ template initMetadataAndAllocBuffersAfterExecute(ctx: ptr dpiContext,
             echo "unsupportedType at idx: " & $i
             # TODO: proper error handling
             break
-        if i == 4:
+        if i == 4: # bignum column
           echo "size_col_4 chars " & $prepStmt.columnDataTypes[i].typeInfo.sizeInChars
           echo "size_col_4 clientsize " & $prepStmt.columnDataTypes[i].typeInfo.clientSizeInBytes
           echo "size_col_4 dbsize " & $prepStmt.columnDataTypes[i].typeInfo.dbSizeInBytes
-          # these values are only populated if varchar2 type. we have a number type who¨s
-          # precision is exceeding 64bit 
+          # these values are only populated if varchar2 type. introspection is limited here
+          # and it´s not possible to detect big numbers
           newVar(conn, otype, DpiNativeCTypes.NativeBYTES,
               (prepStmt.fetchArraySize).int,1, cbuf.addr)
-          # manually set native type: string
         else:
           newVar(conn, otype, ntype, (prepStmt.fetchArraySize).int, size,
               cbuf.addr)
@@ -188,8 +187,8 @@ template initMetadataAndAllocBuffersAfterExecute(ctx: ptr dpiContext,
         else:
           prepStmt.columnBuffers[i] = cbuf
 
-
       for i in countup(0, prepStmt.columnBuffers.len-1):
+        # bind buffer to statement
         if dpiStmt_define(prepStmt.nativeStatement, (i+1).uint32,
              prepStmt.columnBuffers[i].colVar) == DpiResult.FAILURE.ord:
           var err: dpiErrorInfo
@@ -391,7 +390,9 @@ onSuccessExecute(context, dpiConn_create(context, oracleuser, oracleuser.len,
             " clientsize: " & $colinfo.typeinfo.clientSizeInBytes.uint32
       # a refcursor could not be introspected by the statementInfo 
       # -> we need the metadata (refcursor) from the caller
-
+      # TODO: in this case the refcursor is opened by the client
+      # - but a procedure could also return a refCursor (is ref_cursor)
+      # example needed
       discard dpiStmt_release(prepStatement)
 
       prepStatement = refCursorCol.buffer.value.asStmt # fetch ref_cursor
