@@ -218,6 +218,7 @@ var context: ptr dpiContext
 var errorinfo: dpiErrorInfo
 var versionInfo: dpiVersionInfo
 var commonParams: dpiCommonCreateParams
+var connectionParams : dpiConnCreateParams
 # globals
 
 let errno = dpiContext_create(DPI_MAJOR_VERSION, DPI_MINOR_VERSION, addr(
@@ -225,6 +226,8 @@ let errno = dpiContext_create(DPI_MAJOR_VERSION, DPI_MINOR_VERSION, addr(
 if errno == DpiResult.SUCCESS.ord:
   echo "context_created"
   discard dpiContext_initCommonCreateParams(context, commonParams.addr)
+  discard dpiContext_initConnCreateParams(context,connectionParams.addr)
+  connectionParams.authMode = DpiAuthMode.SYSDBA.ord
   commonParams.encoding = nlsLang
 else:
   echo "unable to create context: " & $errorinfo
@@ -236,7 +239,7 @@ var conn: ptr dpiConn
 
 # connectionstrings could be from tns definitions (tnsnames.ora) or provided as param
 onSuccessExecute(context, dpiConn_create(context, oracleuser, oracleuser.len,
-    pw, pw.len, connString, connString.len, commonParams.addr, nil, addr(conn))):
+    pw, pw.len, connString, connString.len, commonParams.addr,connectionParams.addr, addr(conn))):
   echo "connection created"
   
   var prepStatement: ptr dpiStmt
@@ -244,8 +247,18 @@ onSuccessExecute(context, dpiConn_create(context, oracleuser, oracleuser.len,
   var numRows: uint64
 
   let query = "select 'hello äöü ' from dual ".cstring
+  let nlsQuery  = "ALTER SESSION SET NLS_NUMERIC_CHARACTERS = '. ' ".cstring
   let scrollAble = 0.cint
   let tagLength = 0.uint32
+
+  onSuccessExecute(context, dpiConn_prepareStmt(conn, scrollAble,nlsQuery,
+      nlsQuery.len.uint32, nil, tagLength,
+            prepStatement.addr)):
+   
+    onSuccessExecute(context, dpiStmt_execute(prepStatement,
+        DpiModeExec.DEFAULTMODE.ord, numCols.addr)): 
+      discard     
+  discard dpiStmt_release(prepStatement)
 
   # simple select example
   onSuccessExecute(context, dpiConn_prepareStmt(conn, scrollAble, query,
