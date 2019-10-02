@@ -30,23 +30,23 @@ import typeinfo
     - PreparedStatement is used for executing dml/ddl with or without parameters. internal resources
     - are not freed unless destroy is called.
     -
-    - ResultSets are used to consume query results and can be reused. it provides a row-iterator-style
+    - ResultSets are used to consume query results and can be reused (WIP). 
+    - it provides a row-iterator-style
     - API and a direct access API of the buffer (by index)
     -
     - some additional hints: do not share connection/preparedStatement between different threads. 
-    - the context
-    - can be shared between threads according to the ODPI-C documentation (untested)
-    - index-access of a resultset is not bounds checked
+    - the context can be shared between threads according to the ODPI-C documentation (untested).
+    - index-access of a resultset is not bounds checked.
     - if a internal error happens, execution is terminated and the cause could be extracted with the
     - template getErrstr out of the context.
-    - the API does not prevent you from misuse. 
+    - the API does not prevent misuse actually. 
     -
     - for testing and development the XE database is sufficient.
     - version 18c also supports partitioning, PDB's and so on.
     -
     - database resident connection pool is not tested but should work
     -
-    - TODO: more types, implement tooling for easier sqlplus exploitaition,
+    - TODO: more types,bulk binds, implement tooling for easier sqlplus exploitaition,
     - tooling for easy compiletime-query validation, examples
     -
   ]#
@@ -69,9 +69,9 @@ type
   BindRefType* = enum byPosition, byName
 
   BindRef = object
-    # we need to track the bindType.
+    # track the bindType.
     # OUT/INOUT vars must be freed by the code -
-    # IN vars are processed automatically
+    # IN vars are handled automatically
     # by the odpi-c layer
     case kind*: BindRefType
       of byPosition: paramVal*: int
@@ -130,15 +130,15 @@ type
 include odpi_obj2string
 include odpi_to_nimtype
 
-template `[]`(data: ptr dpiData, idx: int): ptr dpiData =
+template `[]`*(data: ptr dpiData, idx: int): ptr dpiData =
   ## accesses the cell(row) of the columnbuffer by index
   cast[ptr dpiData]((cast[int](data)) + (sizeof(dpiData)*idx))
 
-template `[]`(rs: var ResultSet, colidx: int): ParamType =
+template `[]`*(rs: var ResultSet, colidx: int): ParamType =
   ## selects the column of the resultSet.
   rs.rsOutputCols[colidx]
 
-template `[]`(rs: var ParamType, rowidx: int): ptr dpiData =
+template `[]`*(rs: var ParamType, rowidx: int): ptr dpiData =
   ## selects the row of the specified column
   ## the value could be extracted by the dpiData/dpiDataBuffer API
   ## or with the fetch-templates (WIP)
@@ -167,7 +167,8 @@ proc newOracleContext*(encoding: NlsLang, authMode: DpiAuthMode,
                        outCtx: var OracleContext,
                            outMsg: var string): DpiResult =
   ## constructs a new OracleContext needed to access the database.
-  ## if DpiResult.SUCCESS is returned the outCtx is populated. if not the outMsg
+  ## if DpiResult.SUCCESS is returned the outCtx is populated. 
+  ## In case of an error outMsg
   ## contains the error message.
   var ei: dpiErrorInfo
   result = DpiResult(
@@ -187,7 +188,7 @@ proc newOracleContext*(encoding: NlsLang, authMode: DpiAuthMode,
 proc destroyOracleContext*(ocontext: var OracleContext): DpiResult =
   ## destroys the present oracle context. the resultcode of this operation could
   ## be checked with hasError
-  # TODO: evaluate what happens if there are open connection present
+  # TODO: evaluate what happens if there are open connections present
   result = DpiResult(dpiContext_destroy(ocontext.oracleContext))
 
 template getErrstr*(ocontext: var OracleContext): string =
@@ -201,7 +202,7 @@ template isSuccess*(result: DpiResult): bool =
 
 template onSuccessExecute(context: ptr dpiContext, toprobe: untyped,
     body: untyped) =
-  ## template to wrap the boilerplate errorinfo code for testing purposes
+  ## template to wrap the boilerplate errorinfo code 
   var err: dpiErrorInfo
   if toprobe < DpiResult.SUCCESS.ord:
     dpiContext_getError(context, err.addr)
@@ -219,7 +220,8 @@ proc createConnection*(octx: var OracleContext,
                          username: string,
                          passwd: string,
                              ocOut: var OracleConnection): DpiResult =
-  ## creates a connection for the given context and credentials. use getErrstr to retrieve
+  ## creates a connection for the given context and credentials. 
+  ## use getErrstr to retrieve
   ## the error message in case of failure
   ocOut.context = octx
   result = DpiResult(dpiConn_create(octx.oracleContext, username.cstring,
@@ -243,8 +245,6 @@ proc newPreparedStatement*(conn: var OracleConnection, query: var SqlQuery,
   outPs.relatedConn = conn
   outPs.executed = false
   outPs.stmtCacheKey = stmtCacheKey.cstring
-  #outPs.rsOutputCols = newSeq[ParamType](1)
-  #outPs.boundParams = newSeq[ParamType](1)
   result = DpiResult(dpiConn_prepareStmt(conn.connection, 0.cint, query.rawSql,
       query.rawSql.len.uint32, outPs.stmtCacheKey,
       outPs.stmtCacheKey.len.uint32, outPs.pStmt.addr))
@@ -273,15 +273,15 @@ template bindParameter(ps: var PreparedStatement, param: var ParamType,
     discard DpiResult(dpiStmt_bindByPos(ps.pStmt,
                                          param.bindPosition.paramVal.uint32,
                                          param.paramVar
-      )
-    )
+                                        )
+                     )
   elif param.bindPosition.kind == BindRefType.byName:
     discard DpiResult(dpiStmt_bindByName(ps.pStmt,
                                          param.bindPosition.paramName,
                                          param.bindPosition.paramName.len.uint32,
                                          param.paramVar
-      )
-    )
+                                        )
+                      )
 
 proc exploreSize(param: var ParamType, outSize: var int,
     outSizeIsBytes: var int) =
@@ -303,17 +303,13 @@ proc exploreSize(param: var ParamType, outSize: var int,
 
 
 proc bindParameter(ps: var PreparedStatement, param: var ParamType) =
-  ## before calling BindRef and columnBufferSize must be initialised by the caller.
   ## TODO: implement
   var size: int = 0
   var sizeIsBytes: int = 0
   exploreSize(param, size, sizeIsBytes)
-  # fixme: introduce error handling philosophy
   bindParameter(ps, param, size, sizeIsBytes)
 
-# FIXME: templates for setting up std params
 
-# use dpiStmt_fetch/fetch_rows,execute,executeMany
 proc bindParameters(ps: var PreparedStatement, paramList: var ParamList) =
   ## binds in, out or inout parameters to this prepared statement.
   ## the internal structures are retained till this preparedStatement is recycled
@@ -337,7 +333,7 @@ proc addOutColumn(rs: var ResultSet, columnParam: var ParamType) =
          rs.relatedConn.connection,
          cast[dpiOracleTypeNum](rs.rsOutputCols[index].dbType.ord),
          cast[dpiNativeTypeNum](rs.rsOutputCols[index].nativeType.ord),
-         rs.rsBufferedRows.uint32, #maxArraySize
+         rs.rsBufferedRows.uint32, #fetchArraySize
     columnParam.size.uint32, #size]
     0.cint, #sizeIsBytes
     isArray.cint, # isArray
@@ -376,8 +372,8 @@ proc executeStatement*(prepStmt: var PreparedStatement,
                         outRs: var ResultSet,
                         fetchArraySize: int, # number of rows per column
                         dpiMode: uint32 = DpiModeExec.DEFAULTMODE.ord): DpiResult =
-  ## executes the statement without internal buffer. the results can be fetched
-  ## on a col by col base. once executed the bound columns could be reused
+  ## the results can be fetched
+  ## on a col by col base. once executed the bound columns can be reused
   ##
   ## multiple dpiMode's can be "or"ed together
   if not prepStmt.isExecuted:
@@ -402,7 +398,7 @@ proc executeStatement*(prepStmt: var PreparedStatement,
         var qInfo: dpiQueryInfo
 
         for i in countup(1, prepStmt.columnCount.int):
-          # construct needed params out of the metadata
+          # extract needed params out of the metadata
           # the columnindex starts with 1
           # TODO: if a type is not supported by ODPI-C log error within the ParamType
           discard dpiStmt_getQueryInfo(prepStmt.pStmt, i.uint32, qInfo.addr)
@@ -432,14 +428,15 @@ proc fetchNextRows*(rs: var ResultSet): DpiResult =
   ## if DpiResult.FAILURE is returned the internal error could be retrieved
   ## by calling getErrstr on the context.
   ##
-  ## After fetching the window can be accessed by using the
-  ## "[<colidx>][<rowidx>]" operator. No bounds check is performed.
-  ## the colidx should not exceed the maximum column-cound and the
-  ## rowidx should not exceed the given bufferRowIndex.
+  ## After fetching, the window can be accessed by using the
+  ## "[<colidx>][<rowidx>]" operator on the resultSet. 
+  ## No bounds check is performed.
+  ## the colidx should not exceed the maximum column-count and the
+  ## rowidx should not exceed the given fetchArraySize
   ##
   ## remark: no data-copy is performed.
   ## blobs and strings (pointer types) should be copied into the application
-  ## domain before calling fetchNextRows again.
+  ## domain before calling fetchNextRows again. value types are copied by assignment
   result = DpiResult.SUCCESS
   if rs.rsMoreRows:
     var moreRows: cint # out
@@ -460,7 +457,8 @@ proc fetchNextRows*(rs: var ResultSet): DpiResult =
 iterator resultSetRowIterator*(rs: var ResultSet): DpiRow =
   ## iterates over the resultset row by row. no data copy is performed
   ## and the ptr type values should be copiet into the application
-  ## domain before the next window is requested
+  ## domain before the next window is requested.
+  ## do not use this iterator in conjunction with fetchNextRows.
   var p: DpiRow = newSeq[ptr dpiData](rs.rsOutputCols.len)
   rs.rsCurrRow = 0
 
