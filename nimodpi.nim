@@ -11,7 +11,9 @@ include this file into your project if you like to access an oracle database
 (no lib, static binding so far).
 
 This is the low-level wrapper part; so no extra convenience glue logic provided.
-Original API-names preserved (structs and function) for easier linkage with the original documentation
+Original API-names preserved (structs and function) for easier linkage with the original documentation.
+
+if you like a higher-level wrapper, include db_oracle into your project.
 
 ]#
 
@@ -270,7 +272,10 @@ cOverride:
                                 NativeSTMT = DPI_NATIVE_TYPE_STMT,
                                 NativeBOOLEAN = DPI_NATIVE_TYPE_BOOLEAN,
                                 NativeROWID = DPI_NATIVE_TYPE_ROWID
+
   type
+    dpiContext* {.pure,final.} = object
+    dpiConn* {.pure,final.} = object
     dpiPool* {.pure,final.} = object
     dpiLob* {.pure,final.} = object
     dpiObject* {.pure,final.} = object
@@ -467,7 +472,6 @@ cOverride:
       numSuperShardingKeyColumns*: uint8
       outNewSession*: cint
 
-include odpiutils
 
 cCompile(srcDir/"/embed/dpi.c")
 
