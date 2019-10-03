@@ -2,7 +2,9 @@ import nimodpi
 import os
 import times
 import typeinfo
-# import result unused at the moment
+
+# Copyright (c) 2019 Michael Krauter
+# MIT-license - please see the LICENSE-file for details.
 
 #[
   nim oracle database access layer. this is the high level API.
