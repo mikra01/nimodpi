@@ -83,8 +83,8 @@ type
     bindPosition*: BindRef
     queryInfo: dpiQueryInfo
     # position of the parameter
-    nativeType*: DpiNativeCTypes
-    dbType*: DpiOracleTypes
+    nativeType*: DpiNativeCType
+    dbType*: DpiOracleType
     scale*: int
     ## only for numeric types
     size*: int
@@ -95,7 +95,12 @@ type
     ## for single parameters always 1 - for columnar parameters > 1 up to
     ## the given arraySize
 
-  ParamList = seq[ParamType]
+  ParamTypeList* = seq[ParamType]
+  ColumnType* = tuple[nativeType : DpiNativeCType, dbType : DpiOracleType]
+  ColumnTypeList* = seq[ColumnType]
+  DpiNativeCTypeList* = seq[DpiNativeCType]
+  DpiOracleTypeList* = seq[DpiOracleType]
+   
 
   # use dpiStmt_executeMany for bulk binds
 
@@ -106,7 +111,7 @@ type
   PreparedStatement* = object
     relatedConn: OracleConnection
     query*: SqlQuery
-    boundParams: ParamList      # mixed in/out or columnar
+    boundParams: ParamTypeList      # mixed in/out or columnar
     stmtCacheKey*: cstring
     scrollable: bool            # unused
     executed: bool              # quirky flag used to track the state
@@ -115,7 +120,7 @@ type
     pStmt: ptr dpiStmt
     statementInfo*: dpiStmtInfo # populated within execute stage
                                 # following members are resultset related
-    rsOutputCols: ParamList
+    rsOutputCols: ParamTypeList
     rsCurrRow*: int             # reserved for iterating
     rsMoreRows*: bool           #
     rsBufferRowIndex*: int
@@ -147,17 +152,37 @@ template `[]`*(rs: var ParamType, rowidx: int): ptr dpiData =
   ## https://oracle.github.io/odpi/doc/structs/dpiData.html
   cast[ptr dpiData]((cast[int](rs.buffer)) + (sizeof(dpiData)*rowidx))
 
-template nativeType*(pt: var ParamType): DpiNativeCTypes =
+
+template columnCount*( rs : var ResultSet) : int =
+  ## returns the number of columns for given ResultSet
+  rs.rsColumnNames.len  
+  
+
+template resultColParamTypeList*( rs : var ResultSet) : ParamTypeList =
+  ## fetches all result column parameters according to the index.
+  ## first column is at index 0, last column is at ParamTypeList.len-1
+  var plist = newParamTypeList(columnCount)
+  for i in plist.low .. plist.high:
+    plist[i] = rs[i]
+  plist
+
+template toColumnTypeList( pl : var ParamTypeList) : ColumnTypeList =
+  result = newSeq[ColumnType](pl.len) 
+  for i in pl.low .. pl.high:
+    result[i] = ColumnType( nativeType: pl[i].getNativeType , 
+                            dbType: pl[i].getDbType ) 
+
+
+template getNativeType*(pt: var ParamType): DpiNativeCType =
   ## peeks the native type of a param. useful to determine
   ## which type the result column would be
   pt.nativeType
 
-template dbType*(pt: var ParamType): DpiOracleTypes =
-  ## peeks the db type of the param. usefull to determine
-  ## which type the result column would be
+template getDbType*(pt : var ParamType): DpiOracleType =
+  ## peeks the db type of the given param
   pt.dbType
 
-template newParamList(len: int): ParamList =
+template newParamTypeList(len: int): ParamTypeList =
   newSeq[ParamType](len)
 
 proc newSqlQuery*(sql: string): SqlQuery =
@@ -258,8 +283,8 @@ template bindParameter(ps: var PreparedStatement, param: var ParamType,
   discard
     dpiConn_newVar(
          ps.relatedConn.connection,
-         cast[dpiOracleTypeNum](param.dbType.ord),
-         cast[dpiNativeTypeNum](param.nativeType.ord),
+         cast[dpiOracleTypeNum](param.getDbType.ord),
+         cast[dpiNativeTypeNum](param.getNativeType.ord),
          ps.rsBufferedRows.uint32, #maxArraySize
       size.uint32, #size
       sizeIsBytes.cint, #sizeIsBytes
@@ -290,7 +315,7 @@ proc exploreSize(param: var ParamType, outSize: var int,
   outSize = 1
   outSizeIsBytes = 0
   case param.dbType
-    of DpiOracleTypes.OTVARCHAR, OTNVARCHAR, OTCHAR, OTNCHAR, OTCLOB, OTNCLOB, OTLONG_VARCHAR:
+    of DpiOracleType.OTVARCHAR, OTNVARCHAR, OTCHAR, OTNCHAR, OTCLOB, OTNCLOB, OTLONG_VARCHAR:
     # new dpi var for byte-types (for instance varchar2, blob )
       outSize = param.size
     of OTRAW, OTBLOB, OTLONG_RAW:
@@ -310,11 +335,11 @@ proc bindParameter(ps: var PreparedStatement, param: var ParamType) =
   bindParameter(ps, param, size, sizeIsBytes)
 
 
-proc bindParameters(ps: var PreparedStatement, paramList: var ParamList) =
+proc bindParameters(ps: var PreparedStatement, ParamTypeList: var ParamTypeList) =
   ## binds in, out or inout parameters to this prepared statement.
   ## the internal structures are retained till this preparedStatement is recycled
-  for i in paramList.low .. paramList.high:
-    bindParameter(ps, paramList[i])
+  for i in ParamTypeList.low .. ParamTypeList.high:
+    bindParameter(ps, ParamTypeList[i])
 
 proc addOutColumn(rs: var ResultSet, columnParam: var ParamType) =
   ## binds out-parameters to the specified resultset according to the
@@ -331,8 +356,8 @@ proc addOutColumn(rs: var ResultSet, columnParam: var ParamType) =
   discard DpiResult(
       dpiConn_newVar(
          rs.relatedConn.connection,
-         cast[dpiOracleTypeNum](rs.rsOutputCols[index].dbType.ord),
-         cast[dpiNativeTypeNum](rs.rsOutputCols[index].nativeType.ord),
+         cast[dpiOracleTypeNum](rs.rsOutputCols[index].getDbType.ord),
+         cast[dpiNativeTypeNum](rs.rsOutputCols[index].getNativeType.ord),
          rs.rsBufferedRows.uint32, #fetchArraySize
     columnParam.size.uint32, #size]
     0.cint, #sizeIsBytes
@@ -392,7 +417,7 @@ proc executeStatement*(prepStmt: var PreparedStatement,
     outRs = cast[ResultSet](prepStmt)
     if result == DpiResult.SUCCESS:
       if prepStmt.rsOutputCols.len <= 0:
-        outRs.rsOutputCols = newParamList(prepStmt.columnCount.int)
+        outRs.rsOutputCols = newParamTypeList(prepStmt.columnCount.int)
         outRs.rsColumnNames = newSeq[string](prepStmt.columnCount.int)
         discard dpiStmt_getInfo(prepStmt.pStmt, prepStmt.statementInfo.addr)
         var qInfo: dpiQueryInfo
@@ -410,9 +435,9 @@ proc executeStatement*(prepStmt: var PreparedStatement,
                               bindPosition: BindRef(kind: BindRefType.byPosition,
                                                    paramVal: i),
                               queryInfo: qInfo,
-                              nativeType: DpiNativeCTypes(
+                              nativeType: DpiNativeCType(
                                   qinfo.typeinfo.defaultNativeTypeNum),
-                              dbType: DpiOracleTypes(
+                              dbType: DpiOracleType(
                                   qinfo.typeinfo.oracleTypeNum),
                               scale: qinfo.typeinfo.scale,
                               size: qinfo.typeinfo.clientSizeInBytes.int,
@@ -479,10 +504,10 @@ when isMainModule:
   const
     lang: NlsLang = "WE8ISO8859P15".NlsLang
     oracleuser: string = "sys"
-    pw: string = "<passwd>"
+    pw: string = "<pwd>"
     connectionstr: string = """(DESCRIPTION = (ADDRESS = 
                              (PROTOCOL = TCP)
-                             (HOST = <hostname>)  
+                             (HOST = localhost)  
                              (PORT = 1521))
                              (CONNECT_DATA =(SERVER = DEDICATED)
                              (SERVICE_NAME = XEPDB1 )
@@ -498,20 +523,23 @@ when isMainModule:
     if isSuccess(createConnection(octx, connectionstr, oracleuser, pw, conn)):
 
       var query: SqlQuery = newSqlQuery("""select 100 as col1, 'äöü' as col2 from dual 
-          union all 
+          union all  
           select 200 , 'äöü2' from dual
           union all
           select 300 , 'äöü3' from dual
           """)
 
+      var query2: SqlQuery = newSqlQuery("""select * from hr.employees""")
+    
       var pstmt: PreparedStatement
 
-      if isSuccess(newPreparedStatement(conn, query, pstmt)):
+      if isSuccess(newPreparedStatement(conn, query2, pstmt)):
         var rs: ResultSet
 
         if isSuccess(executeStatement(pstmt, rs, 2)):
-          echo "type_column1 " & $nativeType(rs[0])
-          echo "type_column2 " & $nativeType(rs[1])
+          echo "colcount: " & $rs.rsColumnNames.len
+          echo "type_column1 " & $(rs[0]) 
+          echo "type_column2 " & $rs[1].getNativeType
           # TODO: generic variable fetching
           echo rs.rsColumnNames[0] & " " & rs.rsColumnNames[1]
 

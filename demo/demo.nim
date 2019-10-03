@@ -2,6 +2,7 @@ import ../nimodpi
 import strutils
 import os
 import times
+import result
 
 # testsetup: win10,instantclient_19_3_x64
 # target: 12.2.0.1 PDB and 12.1.0.2(exadata,1n)
@@ -18,10 +19,11 @@ import times
 ]#
 
 const
-  nlsLang: cstring = "WE8ISO8859P15"
+  nlsLang: string = "WE8ISO8859P15"
 
 include democredentials
 include demosql
+
 
 proc `$`* (p: var dpiTimestamp): string =
   ## string representation of a timestamp column
@@ -88,8 +90,8 @@ template `[]`(pstmt: var PreparedStatement, idx: int): ptr dpiData =
 proc `$`*(p: var PreparedStatement): string =
   "preparedStmt: colcount: " & $p.columnCount & " " & $p.columnDataTypes
 
-template newVar(conn: ptr dpiConn, otype: DpiOracleTypes,
-    ntype: DpiNativeCTypes, arrSize: int, colLength: uint32,
+template newVar(conn: ptr dpiConn, otype: DpiOracleType,
+    ntype: DpiNativeCType, arrSize: int, colLength: uint32,
                 column: ptr ColumnBuffer) =
   ## initialises a new dpiVar and populates the ColumnBuffer-type
   column.dpiresult = DpiResult(dpiConn_newVar(conn, cast[dpiOracleTypeNum](
@@ -121,6 +123,7 @@ template initMetadataAndAllocBuffersAfterExecute(ctx: ptr dpiContext,
   ## TODO: if numeric exceeds 64bit handle as string
   discard dpiStmt_getFetchArraySize(prepStmt.nativeStatement,
       prepStmt.fetchArraySize.addr)
+  echo "farrsize : " & $prepStmt.fetchArraySize
   discard dpiStmt_getNumQueryColumns(prepStmt.nativeStatement,
       prepStmt.columnCount.addr)
   if dpiStmt_getInfo(prepstatement.nativeStatement,
@@ -139,14 +142,14 @@ template initMetadataAndAllocBuffersAfterExecute(ctx: ptr dpiContext,
           echo "error_introspect_column " & $i
         else:
           prepStmt.columnDataTypes[i-1] = colinfo
-          echo $DpiOracleTypes(colinfo.typeinfo.oracleTypeNum) &
+          echo $DpiOracleType(colinfo.typeinfo.oracleTypeNum) &
             " clientsize: " & $colinfo.typeinfo.clientSizeInBytes.uint32
 
       for i in countup(0, prepStmt.columnDataTypes.len-1):
         var cbuf: ColumnBuffer
-        let otype = DpiOracleTypes(prepStmt.columnDataTypes[
+        let otype = DpiOracleType(prepStmt.columnDataTypes[
             i].typeInfo.oracleTypeNum)
-        let ntype = DpiNativeCTypes(prepStmt.columnDataTypes[
+        let ntype = DpiNativeCType(prepStmt.columnDataTypes[
             i].typeInfo.defaultNativeTypeNum)
         echo $otype & " " & $ntype
         echo "oci_type_code " & $prepStmt.columnDataTypes[i].typeInfo.ociTypeCode
@@ -175,7 +178,7 @@ template initMetadataAndAllocBuffersAfterExecute(ctx: ptr dpiContext,
           echo "size_col_4 dbsize " & $prepStmt.columnDataTypes[i].typeInfo.dbSizeInBytes
           # these values are only populated if varchar2 type. introspection is limited here
           # and it´s not possible to detect big numbers
-          newVar(conn, otype, DpiNativeCTypes.NativeBYTES,
+          newVar(conn, otype, DpiNativeCType.NativeBYTES,
               (prepStmt.fetchArraySize).int,1, cbuf.addr)
         else:
           newVar(conn, otype, ntype, (prepStmt.fetchArraySize).int, size,
@@ -238,8 +241,8 @@ echo "client_version: " & $versionInfo.versionNum
 var conn: ptr dpiConn
 
 # connectionstrings could be from tns definitions (tnsnames.ora) or provided as param
-onSuccessExecute(context, dpiConn_create(context, oracleuser, oracleuser.len,
-    pw, pw.len, connString, connString.len, commonParams.addr,connectionParams.addr, addr(conn))):
+onSuccessExecute(context, dpiConn_create(context,oracleuser,oracleuser.len,
+    pw,pw.len, connString, connString.len, commonParams.addr,connectionParams.addr, addr(conn))):
   echo "connection created"
   
   var prepStatement: ptr dpiStmt
@@ -288,7 +291,7 @@ onSuccessExecute(context, dpiConn_create(context, oracleuser, oracleuser.len,
 
             onSuccessExecute(context, dpiStmt_getQueryInfo(prepStatement, 1,
                 queryInfo.addr)):
-              echo "dbtype: " & $DpiOracleTypes(
+              echo "dbtype: " & $DpiOracleType(
                   queryInfo.typeInfo.oracleTypeNum) &
                       " size_in_chars " & $queryInfo.typeInfo.sizeInChars
 
@@ -371,7 +374,7 @@ onSuccessExecute(context, dpiConn_create(context, oracleuser, oracleuser.len,
 
     var refCursorCol: ColumnBuffer
 
-    newVar(conn, DpiOracleTypes.OTSTMT, DpiNativeCTypes.NATIVESTMT, 1, 0,
+    newVar(conn, DpiOracleType.OTSTMT, DpiNativeCType.NATIVESTMT, 1, 0,
         refCursorCol.addr)
     if hasError(refCursorCol):
       echo "error_init_refcursor_column"
@@ -399,7 +402,7 @@ onSuccessExecute(context, dpiConn_create(context, oracleuser, oracleuser.len,
             colinfo.addr) < DpiResult.SUCCESS.ord:
           echo "error_introspect_column " & $i
         else:
-          echo $DpiOracleTypes(colinfo.typeinfo.oracleTypeNum) &
+          echo $DpiOracleType(colinfo.typeinfo.oracleTypeNum) &
             " clientsize: " & $colinfo.typeinfo.clientSizeInBytes.uint32
       # a refcursor could not be introspected by the statementInfo 
       # -> we need the metadata (refcursor) from the caller

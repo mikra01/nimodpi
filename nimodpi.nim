@@ -230,7 +230,7 @@ cOverride:
                                       SYSKMT = DPI_MODE_AUTH_SYSKMT,
                                       SYSRAC = DPI_MODE_AUTH_SYSRAC
 
-    DpiOracleTypes* {.pure.} = enum OTNONE = DPI_ORACLE_TYPE_NONE,
+    DpiOracleType* {.pure.} = enum OTNONE = DPI_ORACLE_TYPE_NONE,
                                 OTVARCHAR = DPI_ORACLE_TYPE_VARCHAR,
                                 OTNVARCHAR = DPI_ORACLE_TYPE_NVARCHAR,
                                 OTCHAR = DPI_ORACLE_TYPE_CHAR,
@@ -259,7 +259,7 @@ cOverride:
                                 OTNATIVE_UINT = DPI_ORACLE_TYPE_NATIVE_UINT,
                                 OTMAX = DPI_ORACLE_TYPE_MAX
 
-    DpiNativeCTypes* {.pure.} = enum NativeINT64 = DPI_NATIVE_TYPE_INT64,
+    DpiNativeCType* {.pure.} = enum NativeINT64 = DPI_NATIVE_TYPE_INT64,
                                 NativeUINT64 = DPI_NATIVE_TYPE_UINT64,
                                 NativeFLOAT = DPI_NATIVE_TYPE_FLOAT,
                                 NativeDOUBLE = DPI_NATIVE_TYPE_DOUBLE,
