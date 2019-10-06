@@ -156,14 +156,14 @@ template initMetadataAndAllocBuffersAfterExecute(ctx: ptr dpiContext,
           # TODO: construct the dpiVars out of dpiQueryInfo
         var size: uint32
         case ntype
-          of NativeINT64, NativeUINT64, NativeFLOAT, NativeDouble,
-              NativeTIMESTAMP, NativeINTERVAL_DS,
-             NativeINTERVAL_YM, NativeBOOLEAN, NativeROWID:
+          of INT64, UINT64, FLOAT, Double,
+              TIMESTAMP, INTERVAL_DS,
+             INTERVAL_YM, BOOLEAN, ROWID:
             size = 1
             echo "scale: " & $prepStmt.columnDataTypes[i].typeInfo.scale
             echo " precision : " & $prepStmt.columnDataTypes[
                 i].typeInfo.precision
-          of NativeBYTES:
+          of BYTES:
             size = prepStmt.columnDataTypes[i].typeInfo.sizeInChars
             if size == 0:
               # non character data
@@ -178,7 +178,7 @@ template initMetadataAndAllocBuffersAfterExecute(ctx: ptr dpiContext,
           echo "size_col_4 dbsize " & $prepStmt.columnDataTypes[i].typeInfo.dbSizeInBytes
           # these values are only populated if varchar2 type. introspection is limited here
           # and it´s not possible to detect big numbers
-          newVar(conn, otype, DpiNativeCType.NativeBYTES,
+          newVar(conn, otype, DpiNativeCType.BYTES,
               (prepStmt.fetchArraySize).int,1, cbuf.addr)
         else:
           newVar(conn, otype, ntype, (prepStmt.fetchArraySize).int, size,
@@ -374,7 +374,7 @@ onSuccessExecute(context, dpiConn_create(context,oracleuser,oracleuser.len,
 
     var refCursorCol: ColumnBuffer
 
-    newVar(conn, DpiOracleType.OTSTMT, DpiNativeCType.NATIVESTMT, 1, 0,
+    newVar(conn, DpiOracleType.OTSTMT, DpiNativeCType.STMT, 1, 0,
         refCursorCol.addr)
     if hasError(refCursorCol):
       echo "error_init_refcursor_column"
