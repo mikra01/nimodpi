@@ -20,9 +20,10 @@ import nimodpi
     - some features:
     - resultset zero-copy approach: the caller is responsible for copying (helper templates present)
     - within the application domain. "peeking" data is possible via pointers
-    - only the basic types are implemented (number, blob, rowid, varchar2, timestamp)
+    - only the basic types are implemented (numeric, rowid, varchar2, timestamp)
     - pl/sql procedure exploitation is possible with in/out and inout-parameters
     - consuming refcursor is also possible (see demo.nim)
+    - TODO: implement LOB handling
     -
     - designing a vendor generic database API often leads to clumpsy workaround solutions.
       due to that it's out of scope of this project. it's more valueable to wrap the vendor
@@ -32,8 +33,7 @@ import nimodpi
     - ParamType is used for parameter binding (in/out/inout) and consuming result columns
     - PreparedStatement is used for executing dml/ddl with or without parameters. internal resources
     - are not freed unless destroy is called.
-    -
-    - ResultSets are used to consume query results and can be reused (WIP). 
+    - ResultSets are used to consume query results and can be reused (WIP)
     - it provides a row-iterator-style
     - API and a direct access API of the buffer (by index)
     -
@@ -200,28 +200,29 @@ template fetchIntervalDS(val : ptr dpiData ) : Option[Duration] =
   discard   
 
 template fetchDateTime*( val : ptr dpiData ) : Option[DateTime] =
+  ## fetches the specified value as DateTime. the value is copied 
   if val.isDbNull:
     none(DateTime)
   else:
     some(toDateTime(val))
 
-template fetchString*( val : ptr dpiData ) : Option[string] = 
+template fetchString*( val : ptr dpiData ) : Option[string] =
+  ## fetches the specified value as string. the value is copied  
   if val.isDbNull:
     none(string)
   else:
     some(toNimString(val))
 
-
 template fetchBytes*( val : ptr dpiData ) : Option[seq[byte]] =
+  ## fetches the specified value as seq[byte]. the value is copied
   if val.isDbNull:
     none(seq[byte])
   else:
     some(toNimByteSeq(val))
 
-template fetchRowId*( val : ptr dpiData ) : DpiOracleRowId =
+template fetchRowId*( val : ptr dpiData ) : ptr dpiRowid =
   ## fetches the specified value as 10byte array. the value is copied
-  discard  
-
+  val.value.asRowId
 
 template getColumnCount*( rs : var ResultSet) : int =
   ## returns the number of columns for the ResultSet
@@ -593,6 +594,7 @@ when isMainModule:
           """)
 
       var query2: SqlQuery = newSqlQuery("""select 
+                  rowid,
                   EMPLOYEE_ID, 
                   FIRST_NAME, 
                   LAST_NAME, 
@@ -620,11 +622,13 @@ when isMainModule:
           echo "colcount: " & $rs.rsColumnNames.len
         
           # TODO: generic variable fetching
-          echo rs.rsColumnNames[0] & " " & rs.rsColumnNames[1]
+          echo rs.rsColumnNames[1] & " " & rs.rsColumnNames[2]
 
-          for row in resultSetRowIterator(rs): # todo: add type-metadata
+          for row in resultSetRowIterator(rs):
             # output first two rows
-            echo $fetchDouble(row[0].data).get & " " & fetchString(row[1].data).get
+           echo $fetchRowId(row[0].data) &
+             " " & $fetchDouble(row[1].data).get & 
+                 " " & fetchString(row[2].data).get
         
           pstmt.destroy
 

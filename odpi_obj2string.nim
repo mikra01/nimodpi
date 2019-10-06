@@ -1,3 +1,15 @@
+const hChars = "0123456789ABCDEF"
+
+proc hex2Str(par: var openArray[byte]): string =
+  result = newString(2 + ((par.len) shl 1)) # len mul 2 plus 2 extra chars
+  result[0] = '0'
+  result[1] = 'x'
+  for i in countup(0, par.len-1):
+    result[2 + cast[int](i shl 1)] =
+      hChars[cast[int](par[i] shr 4)] # process hs nibble
+    result[3 + cast[int](i shl 1)] =
+      hChars[cast[int](par[i] and 0xF)] # process ls nibble
+
 # toString procs
 proc `$`*(p : var SqlQuery) : string = 
   $p.rawSql
@@ -29,3 +41,9 @@ proc `$`* (p: var dpiTimestamp): string =
 proc `$`*(p: var ColumnType): string =
   "dbType:" & $p.dbType & " nativeType:" & $p.nativeType
    
+proc `$`*(p: ptr dpiRowId): string =
+  ## string representation of the rowid (10byte)
+  var str : cstring = "                    " #20 chars
+  var cstringlen : uint32
+  discard dpiRowid_getStringValue(p,str.addr,cstringlen.addr)
+  return $str
