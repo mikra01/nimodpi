@@ -1,4 +1,4 @@
-import os, strutils
+import os
 import nimterop/[cimport, git, paths]
 
 # Copyright (c) 2019 Michael Krauter
@@ -259,19 +259,19 @@ cOverride:
                                 OTNATIVE_UINT = DPI_ORACLE_TYPE_NATIVE_UINT,
                                 OTMAX = DPI_ORACLE_TYPE_MAX
 
-    DpiNativeCType* {.pure.} = enum NativeINT64 = DPI_NATIVE_TYPE_INT64,
-                                NativeUINT64 = DPI_NATIVE_TYPE_UINT64,
-                                NativeFLOAT = DPI_NATIVE_TYPE_FLOAT,
-                                NativeDOUBLE = DPI_NATIVE_TYPE_DOUBLE,
-                                NativeBYTES = DPI_NATIVE_TYPE_BYTES,
-                                NativeTIMESTAMP = DPI_NATIVE_TYPE_TIMESTAMP,
-                                NativeINTERVAL_DS = DPI_NATIVE_TYPE_INTERVAL_DS,
-                                NativeINTERVAL_YM = DPI_NATIVE_TYPE_INTERVAL_YM,
-                                NativeLOB = DPI_NATIVE_TYPE_LOB,
-                                NativeOBJECT = DPI_NATIVE_TYPE_OBJECT,
-                                NativeSTMT = DPI_NATIVE_TYPE_STMT,
-                                NativeBOOLEAN = DPI_NATIVE_TYPE_BOOLEAN,
-                                NativeROWID = DPI_NATIVE_TYPE_ROWID
+    DpiNativeCType* {.pure.} = enum INT64 = DPI_NATIVE_TYPE_INT64,
+                                UINT64 = DPI_NATIVE_TYPE_UINT64,
+                                FLOAT = DPI_NATIVE_TYPE_FLOAT,
+                                DOUBLE = DPI_NATIVE_TYPE_DOUBLE,
+                                BYTES = DPI_NATIVE_TYPE_BYTES,
+                                TIMESTAMP = DPI_NATIVE_TYPE_TIMESTAMP,
+                                INTERVAL_DS = DPI_NATIVE_TYPE_INTERVAL_DS,
+                                INTERVAL_YM = DPI_NATIVE_TYPE_INTERVAL_YM,
+                                LOB = DPI_NATIVE_TYPE_LOB,
+                                OBJECT = DPI_NATIVE_TYPE_OBJECT,
+                                STMT = DPI_NATIVE_TYPE_STMT,
+                                BOOLEAN = DPI_NATIVE_TYPE_BOOLEAN,
+                                ROWID = DPI_NATIVE_TYPE_ROWID
 
   type
     dpiContext* {.pure,final.} = object
