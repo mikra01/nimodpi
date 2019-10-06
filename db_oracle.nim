@@ -1,7 +1,8 @@
-import nimodpi
 import os
 import times
 import typeinfo
+import options
+import nimodpi
 
 # Copyright (c) 2019 Michael Krauter
 # MIT-license - please see the LICENSE-file for details.
@@ -100,9 +101,8 @@ type
   ParamTypeList* = seq[ParamType]
   ColumnType* = tuple[nativeType : DpiNativeCType, dbType : DpiOracleType]
   ColumnTypeList* = seq[ColumnType]
-  DpiNativeCTypeList* = seq[DpiNativeCType]
-  DpiOracleTypeList* = seq[DpiOracleType]
-   
+
+  DpiOracleRowId* = array[10,byte]   
 
   # use dpiStmt_executeMany for bulk binds
 
@@ -132,13 +132,14 @@ type
 
   ResultSet* = PreparedStatement
 
-  DpiRow* = seq[ptr dpiData]
+  DpiRowElement* = tuple[ columnType : ColumnType, data : ptr dpiData  ]
+  DpiRow* = seq[DpiRowElement]
 
 include odpi_obj2string
 include odpi_to_nimtype
 
 template `[]`*(data: ptr dpiData, idx: int): ptr dpiData =
-  ## accesses the cell(row) of the columnbuffer by index
+  ## direct access of the cell(row) within the columnbuffer by index
   cast[ptr dpiData]((cast[int](data)) + (sizeof(dpiData)*idx))
 
 template `[]`*(rs: var ResultSet, colidx: int): ParamType =
@@ -147,34 +148,91 @@ template `[]`*(rs: var ResultSet, colidx: int): ParamType =
 
 template `[]`*(rs: var ParamType, rowidx: int): ptr dpiData =
   ## selects the row of the specified column
-  ## the value could be extracted by the dpiData/dpiDataBuffer API
-  ## or with the fetch-templates (WIP)
+  ## the value could be extracted by the dpiData/dpiDataBuffer ODPI-C API
+  ## or with the fetch-templates 
   ##
   ## further reading:
   ## https://oracle.github.io/odpi/doc/structs/dpiData.html
   cast[ptr dpiData]((cast[int](rs.buffer)) + (sizeof(dpiData)*rowidx))
 
+template isDbNull*(val : ptr dpiData) : bool =
+  ## returns true if the value is dbNull (value not present)
+  val.isNull.bool
 
-template columnCount*( rs : var ResultSet) : int =
-  ## returns the number of columns for given ResultSet
+template fetchBoolean*(val : ptr dpiData) : Option[bool] =
+  ## fetches the specified value as boolean. the value is copied
+  if val.isDbNull:
+    none(bool)
+  else:
+    some(val.value.asBoolean)
+  
+# simple type conversion templates.
+proc fetchFloat*(val : ptr dpiData) : Option[float32] =
+  ## fetches the specified value as float. the value is copied 
+  if val.isDbNull:
+    none(float32)
+  else:
+    some(val.value.asFloat.float32)
+
+proc fetchDouble*(val : ptr dpiData) : Option[float64] =
+  ## fetches the specified value as double (Nims 64 bit type). the value is copied 
+  if val.isDbNull:
+    none(float64)
+  else:
+    some(val.value.asDouble.float64)
+  
+proc fetchUInt64*(val : ptr dpiData) : Option[uint64] =
+  ## fetches the specified value as double (Nims 64 bit type). the value is copied 
+  if val.isDbNull:
+    none(uint64)
+  else:
+    some(val.value.asUint64)
+
+proc fetchInt64*(val : ptr dpiData) : Option[int64] =
+  ## fetches the specified value as double (Nims 64 bit type). the value is copied 
+  if val.isDbNull:
+    none(int64)
+  else:
+    some(val.value.asInt64)
+
+template fetchIntervalDS(val : ptr dpiData ) : Option[Duration] =
+  # todo: implement
+  discard   
+
+template fetchDateTime*( val : ptr dpiData ) : Option[DateTime] =
+  if val.isDbNull:
+    none(DateTime)
+  else:
+    some(toDateTime(val))
+
+template fetchString*( val : ptr dpiData ) : Option[string] = 
+  if val.isDbNull:
+    none(string)
+  else:
+    some(toNimString(val))
+
+
+template fetchBytes*( val : ptr dpiData ) : Option[seq[byte]] =
+  if val.isDbNull:
+    none(seq[byte])
+  else:
+    some(toNimByteSeq(val))
+
+template fetchRowId*( val : ptr dpiData ) : DpiOracleRowId =
+  ## fetches the specified value as 10byte array. the value is copied
+  discard  
+
+
+template getColumnCount*( rs : var ResultSet) : int =
+  ## returns the number of columns for the ResultSet
   rs.rsColumnNames.len  
   
-
-template resultColParamTypeList*( rs : var ResultSet) : ParamTypeList =
-  ## fetches all result column parameters according to the index.
-  ## first column is at index 0, last column is at ParamTypeList.len-1
-  var plist = newParamTypeList(columnCount)
-  for i in plist.low .. plist.high:
-    plist[i] = rs[i]
-  plist
-
-template toColumnTypeList( pl : var ParamTypeList) : ColumnTypeList =
-  result = newSeq[ColumnType](pl.len) 
-  for i in pl.low .. pl.high:
-    result[i] = ColumnType( nativeType: pl[i].getNativeType , 
-                            dbType: pl[i].getDbType ) 
-
-
+proc getColumnTypeList*( rs : var ResultSet) : ColumnTypeList =
+  result = newSeq[ColumnType](rs.getColumnCount) 
+  for i in result.low .. result.high:
+    result[i] = ( nativeType: rs[i].nativeType , 
+                            dbType: rs[i].dbType )
+  
 template getNativeType*(pt: var ParamType): DpiNativeCType =
   ## peeks the native type of a param. useful to determine
   ## which type the result column would be
@@ -486,14 +544,16 @@ iterator resultSetRowIterator*(rs: var ResultSet): DpiRow =
   ## and the ptr type values should be copiet into the application
   ## domain before the next window is requested.
   ## do not use this iterator in conjunction with fetchNextRows.
-  var p: DpiRow = newSeq[ptr dpiData](rs.rsOutputCols.len)
+  var p: DpiRow = newSeq[DpiRowElement](rs.rsOutputCols.len)
+  var paramtypes = rs.getColumnTypeList
   rs.rsCurrRow = 0
 
   if rs.rsRowsFetched == 0:
     discard fetchNextRows(rs) # todo: impl errorhandling
   while rs.rsCurrRow < rs.rsRowsFetched:
     for i in rs.rsOutputCols.low .. rs.rsOutputCols.high:
-      p[i] = rs.rsOutputCols[i][rs.rsCurrRow]
+      p[i] = (columnType : paramtypes[i],
+              data : rs.rsOutputCols[i][rs.rsCurrRow])
       # construct column
     yield p
     inc rs.rsCurrRow
@@ -503,6 +563,7 @@ iterator resultSetRowIterator*(rs: var ResultSet): DpiRow =
 
 
 when isMainModule:
+  ## the HR Schema is used (XE)
   const
     lang: NlsLang = "WE8ISO8859P15".NlsLang
     oracleuser: string = "sys"
@@ -531,7 +592,19 @@ when isMainModule:
           select 300 , 'äöü3' from dual
           """)
 
-      var query2: SqlQuery = newSqlQuery("""select * from hr.employees""")
+      var query2: SqlQuery = newSqlQuery("""select 
+                  EMPLOYEE_ID, 
+                  FIRST_NAME, 
+                  LAST_NAME, 
+                  EMAIL, 
+                  PHONE_NUMBER, 
+                  HIRE_DATE, 
+                  JOB_ID, 
+                  SALARY, 
+                  COMMISSION_PCT, 
+                  MANAGER_ID, 
+                  DEPARTMENT_ID 
+       from hr.employees""")
     
       var pstmt: PreparedStatement
 
@@ -539,15 +612,19 @@ when isMainModule:
         var rs: ResultSet
 
         if isSuccess(executeStatement(pstmt, rs, 2)):
+          var ctl : ColumnTypeList = rs.getColumnTypeList
+
+          for i in ctl.low .. ctl.high:
+            echo "cname:" & rs.rsColumnNames[i] & " colnumidx: " & $(i+1) & " " & $ctl[i]
+ 
           echo "colcount: " & $rs.rsColumnNames.len
-          echo "type_column1 " & $(rs[0]) 
-          echo "type_column2 " & $rs[1].getNativeType
+        
           # TODO: generic variable fetching
           echo rs.rsColumnNames[0] & " " & rs.rsColumnNames[1]
 
           for row in resultSetRowIterator(rs): # todo: add type-metadata
-            # column1 double column2 string
-            echo $row[0].value.asDouble & " " & toNimString(row[1])
+            # output first two rows
+            echo $fetchDouble(row[0].data).get & " " & fetchString(row[1].data).get
         
           pstmt.destroy
 

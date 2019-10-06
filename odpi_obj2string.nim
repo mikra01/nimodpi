@@ -25,3 +25,7 @@ proc `$`* (p: var dpiTimestamp): string =
   " hour: " & $p.hour & " minute:" & $p.minute & " second:" & $p.second & 
   " fsecond:" & $p.fsecond &
   " tzHOffset:" & $p.tzHourOffset & " tzMinOffset:" & $p.tzMinuteOffset
+
+proc `$`*(p: var ColumnType): string =
+  "dbType:" & $p.dbType & " nativeType:" & $p.nativeType
+   
