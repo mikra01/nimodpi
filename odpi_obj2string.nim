@@ -1,6 +1,6 @@
 const hChars = "0123456789ABCDEF"
 
-proc hex2Str(par: var openArray[byte]): string =
+proc hex2Str*(par: var openArray[byte]): string =
   result = newString(2 + ((par.len) shl 1)) # len mul 2 plus 2 extra chars
   result[0] = '0'
   result[1] = 'x'
