@@ -24,3 +24,14 @@ template toNimByteSeq(data: ptr dpiData): seq[byte] =
   var result: seq[byte] = newSeq[byte](d.length)
   copyMem(addr(result[0]), d.ptr, result.len)
   result
+
+template toIntervalDs(data : ptr dpiData) : Duration =
+  initDuration(nanoseconds = data.value.asIntervalDS.fseconds,
+               microseconds = 0,
+               milliseconds = 0,
+               seconds = data.value.asIntervalDS.seconds, 
+               minutes = data.value.asIntervalDS.minutes, 
+               hours = data.value.asIntervalDS.hours, 
+               days = data.value.asIntervalDS.days , 
+               weeks = 0)
+  
