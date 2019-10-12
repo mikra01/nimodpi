@@ -92,7 +92,6 @@ type
     size*: int
     paramVar: ptr dpiVar
     buffer: ptr dpiData
-    # columnBuffer* : ColumnBuffer
     columnBufferSize: int
     ## for single parameters always 1 - for columnar parameters > 1 up to
     ## the given arraySize
@@ -157,7 +156,6 @@ template `[]`*(rs: var PreparedStatement, bindidx: BindIdx): ParamType =
   # use the setParam templates for setting the value after that.
   # before fetching make sure that the parameter is already created
   rs.boundParams[bindidx]
-  discard 
 
 template `[]`*(rs: var PreparedStatement, paramName: string): ParamType =
   # retrieves the pointer for setting the parameter value by paramname
@@ -188,8 +186,12 @@ template fetchBoolean*(val : ptr dpiData) : Option[bool] =
   else:
     some(val.value.asBoolean)
 
-template setParamValBoolean(param : ParamType, value : Option[bool] ) =
-  discard    
+template setBoolean*(param : ParamType, value : Option[bool] ) =
+  ## bind parameter setter boolean type. this setter operates always with index 1
+  if value.isNone:
+     param.buffer.setDbNull
+  else:  
+     param.buffer.asBoolean.value = value.some  
   
 # simple type conversion templates.
 template fetchFloat*(val : ptr dpiData) : Option[float32] =
@@ -199,8 +201,12 @@ template fetchFloat*(val : ptr dpiData) : Option[float32] =
   else:
     some(val.value.asFloat.float32)
 
-template setParamValFloat( param : ParamType, value : Option[float32]) =
-  discard
+template setFloat*( param : ParamType, value : Option[float32]) =
+  ## bind parameter setter float32 type. this setter operates always with index 1
+  if value.isNone:
+    param.buffer.setDbNull
+  else:  
+    param.buffer.asFloat.value = value.some
 
 template fetchDouble*(val : ptr dpiData) : Option[float64] =
   ## fetches the specified value as double (Nims 64 bit type). the value is copied 
@@ -209,8 +215,12 @@ template fetchDouble*(val : ptr dpiData) : Option[float64] =
   else:
     some(val.value.asDouble.float64)
 
-template setParamValDouble(param : ParamType, value : Option[float64]) =
-  discard
+template setDouble*(param : ParamType, value : Option[float64]) =
+  ## bind parameter setter float64 type. this setter operates always with index 1
+  if value.isNone:
+    param.buffer.setDbNull
+  else:  
+    param.buffer.asDouble = value.some   
   
 template fetchUInt64*(val : ptr dpiData) : Option[uint64] =
   ## fetches the specified value as double (Nims 64 bit type). the value is copied 
@@ -219,12 +229,12 @@ template fetchUInt64*(val : ptr dpiData) : Option[uint64] =
   else:
     some(val.value.asUint64)
 
-    template setParamDouble(param : ptr dpiData, value : Option[float64]) =
-      discard
-
-template setParamValUInt64(parma : ParamType, value : Option[uint64]) =
-  ## sets a uint64 value of the given parameter
-  discard
+template setInt64*(param : ParamType, value : Option[uint64]) =
+  ## bind parameter setter uint64 type. this setter operates always with index 1
+  if value.isNone:
+    param.buffer.setDbNull
+  else:  
+    param.buffer.asUint64 = value.some    
       
 template fetchInt64*(val : ptr dpiData) : Option[int64] =
   ## fetches the specified value as double (Nims 64 bit type). the value is copied 
@@ -233,21 +243,32 @@ template fetchInt64*(val : ptr dpiData) : Option[int64] =
   else:
     some(val.value.asInt64)
 
-template setParamValInt64( param : ParamType, value : Option[int64]) =
-  ## sets a int64 value of the given parameter
+template setInt64( param : ParamType, value : Option[int64]) =
+   ## bind parameter setter int64 type. this setter operates always with index 1
+   if value.isNone:
+    param.buffer.setDbNull
+   else:  
+    param.buffer.asInt64 = value.some   
 
-  discard
-
-template fetchIntervalDS(val : ptr dpiData ) : Option[Duration] =
+template fetchIntervalDS*(val : ptr dpiData ) : Option[Duration] =
   # todo: implement
-  discard   
+  if val.isDbNull:
+    none(Duration)
+  else:
+    some(val.toIntervalDs)
+   
 
-template setParamValIntervalDS(param : ParamType , value : Option[Duration]) =
-  ## sets a intervalDS value of the given parameter
-
-  discard
+template setIntervalDS*(param : ParamType , value : Option[Duration]) =
+  ## bind parameter setter IntervalDS type. this setter operates always with index 1
+  if value.isNone:
+    param.buffer.setDbNull
+  else:  
+    param.buffer.value.asIntervalDS.fseconds = value.some.nanoseconds    
+    param.buffer.value.asIntervalDS.seconds = value.some.seconds 
+    param.buffer.value.asIntervalDS.minutes = value.some.minutes
+    param.buffer.value.asIntervalDS.hours = value.some.hours
+    param.buffer.value.asIntervalDS.days = value.some.days
   
-
 template fetchDateTime*( val : ptr dpiData ) : Option[DateTime] =
   ## fetches the specified value as DateTime. the value is copied 
   if val.isDbNull:
@@ -255,10 +276,27 @@ template fetchDateTime*( val : ptr dpiData ) : Option[DateTime] =
   else:
     some(toDateTime(val))
 
-template setParamValDateTime(param : ParamType , value : Option[DateTime] ) = 
-  ## sets a DateTime value of the given parameter
-  discard
-
+template setDateTime*(param : ParamType , value : Option[DateTime] ) = 
+  ## bind parameter setter DateTime type. this setter operates always with index 1
+  if value.isNone:
+    param.buffer.setDbNull
+  else:  
+    let dt = cast[DateTime](some)
+    let utcoffset = dt.utcOffset
+    param.buffer.value.asTimestamp.year = dt.year
+    param.buffer.v alue.asTimestamp.month = dt.month     
+    param.buffer.value.asTimestamp.day = dt.day
+    param.buffer.value.asTimestamp.hour = dt.hour
+    param.buffer.value.asTimestamp.minute = dt.minute
+    param.buffer.value.asTimestamp.second =  dt.second
+    param.buffer.value.asTimestamp.fsecond = dt.nanosecond
+    
+    if not tz.isNil:
+      let tzhour : uint8 =  cast[uint8](utcoffset/3600) # get hours and throw fraction away
+      param.buffer.value.asTimestamp.tzHourOffset = tzhour
+      param.buffer.value.asTimestamp.tzMinuteOffset = cast[uint8]((utcoffset - tzhour*3600)/60)
+      # TODO: eval if ok 
+  
 template fetchString*( val : ptr dpiData ) : Option[string] =
   ## fetches the specified value as string. the value is copied  
   if val.isDbNull:
@@ -266,30 +304,39 @@ template fetchString*( val : ptr dpiData ) : Option[string] =
   else:
     some(toNimString(val))
 
-template setParamValString(param : ParamType , value : Option[string] ) = 
-    ## sets a string value of the given parameter
-    discard
+template setString*(param : ParamType , value : Option[string] ) = 
+  ## bind parameter setter string type. this setter operates always with index 1
+  if value.isNone:
+    param.buffer.setDbNull
+  else:  
+    discard dpiVar_setFromBytes(param.paramVar,0,addr(value.some[0]),value.some.len)    
   
 template fetchBytes*( val : ptr dpiData ) : Option[seq[byte]] =
-  ## fetches the specified value as seq[byte]. the value is copied
+  ## fetches the specified value as seq[byte]. the byte array is copied
   if val.isDbNull:
     none(seq[byte])
   else:
     some(toNimByteSeq(val))
 
-template setParamValBytes(param : ParamType , value: Option[seq[byte]] ) = 
-  ## sets the given parameter of type: bytes. the value is copied into the
-  ## drivers domain 
-
-  discard
+template setBytes*(param : ParamType , value: Option[seq[byte]] ) = 
+  ## bind parameter setter seq[byte] type. this setter operates always with index 1
+  ## the value is copied into the drivers domain 
+  if value.isNone:
+    param.data.setDbNull
+  else:  
+    discard dpiVar_setFromBytes(param.paramVar,0,addr(value.some[0]),value.some.len)    
   
 template fetchRowId*( param : ptr dpiData ) : ptr dpiRowid =
   ## fetches the specified value as 10byte array. the value is copied
-  param.value.asRowId
+  param.value.asRowId 
 
-template setParamValRowId(param : ParamType , rowid : array[10,byte] ) =
-  ## sets a parameter of type: rowId (seems that the rowid can never be nil)
-  discard
+template setRowId*(param : ParamType , rowid : ptr dpiRowid ) =
+  ## bind parameter setter boolean type. this setter operates always with index 1
+  ## (todo: eval if the rowid could be nil)
+  if value.isNone:
+    param.data.setDbNull
+  else:  
+    discard dpiVar_setFromRowid(param.paramVar,0,rowid)  
 
 
 template getColumnCount*( rs : var ResultSet) : int =
@@ -312,9 +359,11 @@ template getDbType*(pt : var ParamType): DpiOracleType =
   pt.dbType
 
 template newParamTypeList(len: int): ParamTypeList =
+  # internal template ParamTypeList construction
   newSeq[ParamType](len)
 
 proc newSqlQuery*(sql: string): SqlQuery =
+  ## template to construct a SqlQuery type
   SqlQuery(rawSql: sql.cstring)
 
 proc newOracleContext*(encoding: NlsLang, authMode: DpiAuthMode,
@@ -406,7 +455,7 @@ proc newPreparedStatement*(conn: var OracleConnection, query: var SqlQuery,
 
 template bindParameter(ps: var PreparedStatement, param: var ParamType,
     size: int, sizeIsBytes: int) =
-  ## internal proc which is processed after the param is completely populated
+  # internal proc which is processed after the param is completely populated
   var isArray: uint32 = 0
   if ps.rsBufferedRows > 1:
     isArray = 1
@@ -437,7 +486,7 @@ template bindParameter(ps: var PreparedStatement, param: var ParamType,
                                          param.paramVar
                                         )
                       )
-
+   
 proc exploreSize(param: var ParamType, outSize: var int,
     outSizeIsBytes: var int) =
   ## fetches the size of bytes according to the type
@@ -465,6 +514,13 @@ proc bindParameter(ps: var PreparedStatement, param: var ParamType) =
   bindParameter(ps, param, size, sizeIsBytes)
 
   # ColumnType* BindRef
+
+template isParamPresent(ps : var PreparedStatement, paramName : string) : bool =
+  discard # TODO: implement
+
+template isParamPresent(ps : var PreparedStatement, paramIdx: BindIdx) : bool =
+  discard # TODO: implement
+  
 
 proc createBindParameter(ps : var PreparedStatement, coltype : ColumnType,  paramName : string) =
   ## creates a bindparameter by parameterName. the parametername must be referenced within the
