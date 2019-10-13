@@ -96,7 +96,10 @@ type
     ## for single parameters always 1 - for columnar parameters > 1 up to
     ## the given arraySize
 
-  ParamTypeList* = seq[ParamType]
+  ParamTypeRef* = ref ParamType
+
+  ParamTypeList* = seq[ParamTypeRef]
+
   ColumnType* = tuple[nativeType: DpiNativeCType, 
                       dbType: DpiOracleType, 
                       colsize: int,
@@ -142,11 +145,11 @@ template `[]`*(data: ptr dpiData, idx: int): ptr dpiData =
   ## direct access of the cell(row) within the columnbuffer by index
   cast[ptr dpiData]((cast[int](data)) + (sizeof(dpiData)*idx))
 
-template `[]`*(rs: var ResultSet, colidx: int): ParamType =
+template `[]`*(rs: var ResultSet, colidx: int): ParamTypeRef =
   ## selects the column of the resultSet.
   rs.rsOutputCols[colidx]
-
-template `[]`*(rs: var ParamType, rowidx: int): ptr dpiData =
+ 
+template `[]`*(rs: var ParamTypeRef, rowidx: int): ptr dpiData =
   ## selects the row of the specified column
   ## the value could be extracted by the dpiData/dpiDataBuffer ODPI-C API
   ## or with the fetch-templates 
@@ -155,13 +158,13 @@ template `[]`*(rs: var ParamType, rowidx: int): ptr dpiData =
   ## https://oracle.github.io/odpi/doc/structs/dpiData.html
   cast[ptr dpiData]((cast[int](rs.buffer)) + (sizeof(dpiData)*rowidx))
 
-template `[]`*(rs: var PreparedStatement, bindidx: BindIdx): ParamType =
+template `[]`*(rs: var PreparedStatement, bindidx: BindIdx): ParamTypeRef =
   # retrieves the paramType for setting the parameter value by index
   # use the setParam templates for setting the value after that.
   # before fetching make sure that the parameter is already created
   rs.boundParams[bindidx]
 
-template `[]`*(rs: var PreparedStatement, paramName: string): ParamType =
+template `[]`*(rs: var PreparedStatement, paramName: string): ParamTypeRef =
   # retrieves the pointer for setting the parameter value by paramname
   # before fetching make sure that the parameter is already created otherwise
   # an IOError is thrown
@@ -363,7 +366,7 @@ template getDbType*(pt : var ParamType): DpiOracleType =
 
 template newParamTypeList(len: int): ParamTypeList =
   # internal template ParamTypeList construction
-  newSeq[ParamType](len)
+  newSeq[ParamTypeRef](len)
 
 proc newSqlQuery*(sql: string): SqlQuery =
   ## template to construct a SqlQuery type
@@ -441,18 +444,22 @@ proc releaseConnection*(conn: var OracleConnection): DpiResult =
   ## releases the connection
   result = DpiResult(dpiConn_release(conn.connection))
 
-proc newPreparedStatement*(conn: var OracleConnection, query: var SqlQuery,
+proc newPreparedStatement*(conn: var OracleConnection, 
+                           query: var SqlQuery,
                            outPs: var PreparedStatement,
-                               stmtCacheKey: string = ""): DpiResult =
+                           stmtCacheKey: string = "", 
+                           bindParameterCount : int = 0): DpiResult =
   ## constructs a new prepared statement object linked to the given specified query.
-  ## the statement cache key is optional
+  ## the statement cache key is optional.
+  ## bindParameterCount needs to be specified if there are bindParameters present.
+  ## the default value is 0 which means "no bind parameter present"
   outPs.scrollable = false # always false due to not implemented
   outPs.query = query
   outPs.columnCount = 0
   outPs.relatedConn = conn
   outPs.executed = false
   outPs.stmtCacheKey = stmtCacheKey.cstring
-  outPs.boundParams = @[]
+  outPs.boundParams = newSeq[ParamTypeRef](bindParameterCount)
   result = DpiResult(dpiConn_prepareStmt(conn.connection, 0.cint, query.rawSql,
       query.rawSql.len.uint32, outPs.stmtCacheKey,
       outPs.stmtCacheKey.len.uint32, outPs.pStmt.addr))
@@ -476,7 +483,8 @@ template bindParameter(ps: var PreparedStatement, param: var ParamType,
       param.paramVar.addr,
       param.buffer.addr
       )
-
+  # FIXME: call bindBy after the values could be set by the caller
+  # order would be (arrayType) : setFromBytes, setNumElementsinArray, bindBy..
   if param.bindPosition.kind == BindInfoType.byPosition:
     discard DpiResult(dpiStmt_bindByPos(ps.pStmt,
                                          param.bindPosition.paramVal.uint32,
@@ -499,32 +507,42 @@ template isParamPresent(ps : var PreparedStatement, paramName : string) : bool =
 template isParamPresent(ps : var PreparedStatement, paramIdx: BindIdx) : bool =
   discard # TODO: implement
 
-proc newColumnType*( nativeType : DpiNativeCType, 
+template newColumnType*( nativeType : DpiNativeCType, 
                      dbType: DpiOracleType, 
                      colsize : int = 1, 
                      sizeIsBytes: bool = false  ) : ColumnType =
   ## construction proc for the ColumnType type. for numerical types colsize is always 1.
   ## only for varchars,blobs the colsize must be set (max). if sizeIsBytes is false,
-  ## the colsize must contain the number of characters                     
-  discard  
+  ## the colsize must contain the number of characters not the bytecount                     
+  (nativeType : nativeType,dbType : dbType,colsize:colsize,sizeIsBytes:sizeIsBytes)  
 
-proc createBindParameter(ps : var PreparedStatement, coltype : ColumnType,  paramName : string) =
+proc createBindParameter(ps : var PreparedStatement, 
+                         coltype : ColumnType,  
+                         paramName : string) : ref ParamType =
   ## creates a bindparameter by parameterName. the parametername must be referenced within the
   ## query by :<paramName>
   ## the parameter value can set with the [] operator on the preparedStatement.
-  ## see https://oracle.github.io/odpi/doc/user_guide/data_types.html for supported types.
+  ## see https://oracle.github.io/odpi/doc/user_guide/data_types.html for supported type
+  ## combinations.
   ## the type of the parameter can be in,out or in/out
+  # todo: use template bindparameter
+  # call bindBy only after the value is set.
   discard
 
-proc createBindParameter(ps : var PreparedStatement, coltype : ColumnType, idx : BindIdx) =
+proc createBindParameter(ps : var PreparedStatement, 
+                         coltype : ColumnType, 
+                         idx : BindIdx) : ref ParamType =
   ## creates a bindparameter by parameter index. the parameterindex must be referenced
   ## within the query with :<paramIndex>.
   ## the parameter value can set with the [] operator on the preparedStatement.
-  ## see https://oracle.github.io/odpi/doc/user_guide/data_types.html for supported types
+  ## see https://oracle.github.io/odpi/doc/user_guide/data_types.html for supported type
+  ## combinations.
   ## the type of the parameter can be in, out or in/out
+  # todo: use template bindParameter
+  # cast[ParamType]new ParamType()
   discard
 
-proc addOutColumn(rs: var ResultSet, columnParam: var ParamType) =
+proc addOutColumn(rs: var ResultSet, columnParam: ParamTypeRef) =
   ## binds out-parameters to the specified resultset according to the
   ## metadata given by the database
   var isArray: uint32 = 0
@@ -584,6 +602,32 @@ proc executeStatement*(prepStmt: var PreparedStatement,
   ## on a col by col base. once executed the bound columns can be reused
   ##
   ## multiple dpiMode's can be "or"ed together
+  
+  # probe if binds present
+  if prepStmt.boundParams.len > 0:
+    for i in prepStmt.boundParams.low .. prepStmt.boundParams.high:
+      let bp = prepStmt.boundParams[i]
+      if bp.rowBufferSize > 1:
+        discard dpiVar_setNumElementsInArray(bp.paramVar,
+                                             bp.rowBufferSize.uint32)
+      else:
+        discard
+        # single_param
+     # order would be (arrayType) : setFromBytes, setNumElementsinArray, bindBy..
+     # if param.bindPosition.kind == BindInfoType.byPosition:
+     # discard DpiResult(dpiStmt_bindByPos(ps.pStmt,
+     #                                    param.bindPosition.paramVal.uint32,
+     #                                    param.paramVar
+     #                                   )
+     #                )
+     # elif param.bindPosition.kind == BindInfoType.byName:
+     # discard DpiResult(dpiStmt_bindByName(ps.pStmt,
+     #                                    param.bindPosition.paramName,
+     #                                    param.bindPosition.paramName.len.uint32,
+     #                                    param.paramVar
+     #                                   )
+     #                 )
+
   if not prepStmt.isExecuted:
     # TODO: reset() needed
     prepStmt.rsMoreRows = true
@@ -614,14 +658,14 @@ proc executeStatement*(prepStmt: var PreparedStatement,
           copyMem(addr(colname[0]), qInfo.name.ptr, colname.len)
 
           outRs.rsColumnNames[i-1] = colname
-          outRs.rsOutputCols[i-1] = ParamType(
+          outRs.rsOutputCols[i-1] = ParamTypeRef(
                               bindPosition: BindInfo(kind: BindInfoType.byPosition,
                                                    paramVal: i),
                               queryInfo: qInfo,
                               columnType: (nativeType: DpiNativeCType(
-                                  qinfo.typeinfo.defaultNativeTypeNum),
-                              dbType: DpiOracleType(
-                                  qinfo.typeinfo.oracleTypeNum),
+                                           qinfo.typeinfo.defaultNativeTypeNum),
+                                           dbType: DpiOracleType(
+                                           qinfo.typeinfo.oracleTypeNum),
                               colSize: qinfo.typeinfo.clientSizeInBytes.int,
                               sizeIsBytes: true),
                               scale: qinfo.typeinfo.scale,
@@ -696,7 +740,7 @@ iterator resultSetRowIterator*(rs: var ResultSet): DpiRow =
 
 
 when isMainModule: 
-  ## the HR Schema is used (XE)
+  ## the HR Schema is used (XE) for the following tests
   const
     lang: NlsLang = "WE8ISO8859P15".NlsLang
     oracleuser: string = "sys"
