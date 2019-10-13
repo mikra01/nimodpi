@@ -42,7 +42,7 @@ proc `$`*(p: var ColumnType): string =
   "dbType:" & $p.dbType & " nativeType:" & $p.nativeType
    
 proc `$`*(p: ptr dpiRowId): string =
-  ## string representation of the rowid (10byte)
+  ## string representation of the rowid (10byte) - base64 encoded
   var str : cstring = "                    " #20 chars
   var cstringlen : uint32
   discard dpiRowid_getStringValue(p,str.addr,cstringlen.addr)
