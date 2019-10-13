@@ -84,9 +84,8 @@ type
     ## the database type.
     bindPosition*: BindInfo
     queryInfo: dpiQueryInfo
-    # position of the parameter
-    nativeType*: DpiNativeCType
-    dbType*: DpiOracleType
+    columnType*: ColumnType
+    # tracks the native- and dbtype
     scale*: int
     ## only for numeric types
     size*: int
@@ -327,7 +326,7 @@ template setBytes*(param : ParamType , value: Option[seq[byte]] ) =
     discard dpiVar_setFromBytes(param.paramVar,0,addr(value.some[0]),value.some.len)    
   
 template fetchRowId*( param : ptr dpiData ) : ptr dpiRowid =
-  ## fetches the specified value as 10byte array. the value is copied
+  ## fetches the rowId (internal representation).
   param.value.asRowId 
 
 template setRowId*(param : ParamType , rowid : ptr dpiRowid ) =
@@ -346,9 +345,8 @@ template getColumnCount*( rs : var ResultSet) : int =
 proc getColumnTypeList*( rs : var ResultSet) : ColumnTypeList =
   result = newSeq[ColumnType](rs.getColumnCount) 
   for i in result.low .. result.high:
-    result[i] = ( nativeType: rs[i].nativeType , 
-                            dbType: rs[i].dbType )
-  
+    result[i] = rs[i].columnType 
+
 template getNativeType*(pt: var ParamType): DpiNativeCType =
   ## peeks the native type of a param. useful to determine
   ## which type the result column would be
@@ -405,7 +403,8 @@ template isSuccess*(result: DpiResult): bool =
 
 template onSuccessExecute(context: ptr dpiContext, toprobe: untyped,
     body: untyped) =
-  ## template to wrap the boilerplate errorinfo code 
+  ## template to wrap the boilerplate errorinfo code.
+  ## used for the tests 
   var err: dpiErrorInfo
   if toprobe < DpiResult.SUCCESS.ord:
     dpiContext_getError(context, err.addr)
@@ -462,8 +461,8 @@ template bindParameter(ps: var PreparedStatement, param: var ParamType,
   discard
     dpiConn_newVar(
          ps.relatedConn.connection,
-         cast[dpiOracleTypeNum](param.getDbType.ord),
-         cast[dpiNativeTypeNum](param.getNativeType.ord),
+         cast[dpiOracleTypeNum](param.columnType.dbType.ord),
+         cast[dpiNativeTypeNum](param.columnType.nativeType.ord),
          ps.rsBufferedRows.uint32, #maxArraySize
       size.uint32, #size
       sizeIsBytes.cint, #sizeIsBytes
@@ -493,7 +492,7 @@ proc exploreSize(param: var ParamType, outSize: var int,
   # FIXME: deprecated
   outSize = 1
   outSizeIsBytes = 0
-  case param.dbType
+  case param.columnType.dbType
     of DpiOracleType.OTVARCHAR, OTNVARCHAR, OTCHAR, OTNCHAR, OTCLOB, OTNCLOB, OTLONG_VARCHAR:
     # new dpi var for byte-types (for instance varchar2, blob )
       outSize = param.size
@@ -526,7 +525,8 @@ proc createBindParameter(ps : var PreparedStatement, coltype : ColumnType,  para
   ## creates a bindparameter by parameterName. the parametername must be referenced within the
   ## query by :<paramName>
   ## the parameter value can set with the [] operator on the preparedStatement.
-  ## see https://oracle.github.io/odpi/doc/user_guide/data_types.html for supported types
+  ## see https://oracle.github.io/odpi/doc/user_guide/data_types.html for supported types.
+  ## the type of the parameter can be in,out or in/out
   discard
 
 proc createBindParameter(ps : var PreparedStatement, coltype : ColumnType, idx : BindIdx) =
@@ -534,6 +534,7 @@ proc createBindParameter(ps : var PreparedStatement, coltype : ColumnType, idx :
   ## within the query with :<paramIndex>.
   ## the parameter value can set with the [] operator on the preparedStatement.
   ## see https://oracle.github.io/odpi/doc/user_guide/data_types.html for supported types
+  ## the type of the parameter can be in, out or in/out
   discard
 
 proc addOutColumn(rs: var ResultSet, columnParam: var ParamType) =
@@ -551,8 +552,8 @@ proc addOutColumn(rs: var ResultSet, columnParam: var ParamType) =
   discard DpiResult(
       dpiConn_newVar(
          rs.relatedConn.connection,
-         cast[dpiOracleTypeNum](rs.rsOutputCols[index].getDbType.ord),
-         cast[dpiNativeTypeNum](rs.rsOutputCols[index].getNativeType.ord),
+         cast[dpiOracleTypeNum](rs.rsOutputCols[index].columnType.dbType.ord),
+         cast[dpiNativeTypeNum](rs.rsOutputCols[index].columnType.nativeType.ord),
          rs.rsBufferedRows.uint32, #fetchArraySize
     columnParam.size.uint32, #size]
     0.cint, #sizeIsBytes
@@ -630,10 +631,10 @@ proc executeStatement*(prepStmt: var PreparedStatement,
                               bindPosition: BindInfo(kind: BindInfoType.byPosition,
                                                    paramVal: i),
                               queryInfo: qInfo,
-                              nativeType: DpiNativeCType(
+                              columnType: (nativeType: DpiNativeCType(
                                   qinfo.typeinfo.defaultNativeTypeNum),
                               dbType: DpiOracleType(
-                                  qinfo.typeinfo.oracleTypeNum),
+                                  qinfo.typeinfo.oracleTypeNum)),
                               scale: qinfo.typeinfo.scale,
                               size: qinfo.typeinfo.clientSizeInBytes.int,
                               paramVar: nil,
