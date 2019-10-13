@@ -397,7 +397,7 @@ proc destroyOracleContext*(ocontext: var OracleContext): DpiResult =
 template getErrstr*(ocontext: var OracleContext): string =
   ## checks if the last operation results with error or not
   var ei: dpiErrorInfo
-  dpiContext_getError(octx.oracleContext, ei.addr)
+  dpiContext_getError(ocontext.oracleContext, ei.addr)
   $ei
 
 template isSuccess*(result: DpiResult): bool =
@@ -644,7 +644,7 @@ proc executeStatement*(prepStmt: var PreparedStatement,
     result = DpiResult(DpiResult.FAILURE.ord)
 
 proc fetchNextRows*(rs: var ResultSet): DpiResult =
-  ## fetches next rows (if present) into the internal buffer
+  ## fetches next rows (if present) into the internal buffer.
   ## if DpiResult.FAILURE is returned the internal error could be retrieved
   ## by calling getErrstr on the context.
   ##
@@ -679,13 +679,18 @@ iterator resultSetRowIterator*(rs: var ResultSet): DpiRow =
   ## and the ptr type values should be copied into the application
   ## domain before the next window is requested.
   ## do not use this iterator in conjunction with fetchNextRows because
-  ## it's used internally
+  ## it's used internally.
+  ## in an error case an IOException is thrown with the error message retrieved
+  ## out of the context.
   var p: DpiRow = newSeq[DpiRowElement](rs.rsOutputCols.len)
   var paramtypes = rs.getColumnTypeList
   rs.rsCurrRow = 0
 
   if rs.rsRowsFetched == 0:
-    discard fetchNextRows(rs) # todo: impl errorhandling
+    if fetchNextRows(rs) != DpiResult.SUCCESS:
+      raise newException(IOError, "resultSetRowIterator: " & 
+        getErrstr(rs.relatedConn.context) )
+      {.effects.}
   while rs.rsCurrRow < rs.rsRowsFetched:
     for i in rs.rsOutputCols.low .. rs.rsOutputCols.high:
       p[i] = (columnType : paramtypes[i],
@@ -694,7 +699,10 @@ iterator resultSetRowIterator*(rs: var ResultSet): DpiRow =
     yield p
     inc rs.rsCurrRow
     if rs.rsCurrRow == rs.rsRowsFetched and rs.rsMoreRows:
-      discard fetchNextRows(rs)
+      if fetchNextRows(rs) != DpiResult.SUCCESS:
+        raise newException(IOError, "resultSetRowIterator: " & 
+          getErrstr(rs.relatedConn.context) )
+        {.effects.}         
       rs.rsCurrRow = 0
 
 
