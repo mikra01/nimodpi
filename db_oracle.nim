@@ -92,7 +92,7 @@ type
     size*: int
     paramVar: ptr dpiVar
     buffer: ptr dpiData
-    columnBufferSize: int
+    rowBufferSize: int   # number of buffered rows
     ## for single parameters always 1 - for columnar parameters > 1 up to
     ## the given arraySize
 
@@ -229,7 +229,7 @@ template fetchUInt64*(val : ptr dpiData) : Option[uint64] =
   else:
     some(val.value.asUint64)
 
-template setInt64*(param : ParamType, value : Option[uint64]) =
+template setInt64*(param : ParamType, value : Option[int64]) =
   ## bind parameter setter uint64 type. this setter operates always with index 1
   if value.isNone:
     param.buffer.setDbNull
@@ -486,7 +486,7 @@ template bindParameter(ps: var PreparedStatement, param: var ParamType,
                                          param.paramVar
                                         )
                       )
-   
+# TODO: arraybinding: before calling execute set the size with dpiVar_setNumElementsInArray   
 proc exploreSize(param: var ParamType, outSize: var int,
     outSizeIsBytes: var int) =
   ## fetches the size of bytes according to the type
@@ -638,7 +638,7 @@ proc executeStatement*(prepStmt: var PreparedStatement,
                               size: qinfo.typeinfo.clientSizeInBytes.int,
                               paramVar: nil,
                               buffer: nil,
-                              columnBufferSize: outRs.rsBufferedRows)
+                              rowBufferSize: outRs.rsBufferedRows)
           addOutColumn(outRs, outRs.rsOutputCols[i-1])
   else:
     result = DpiResult(DpiResult.FAILURE.ord)
