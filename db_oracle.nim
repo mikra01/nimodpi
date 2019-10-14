@@ -87,9 +87,6 @@ type
     queryInfo: dpiQueryInfo
     columnType*: ColumnType
     # tracks the native- and dbtype
-    scale*: int
-    ## only for numeric types 
-    # fixme: move scale to ColumnType
     paramVar: ptr dpiVar
     buffer: ptr dpiData
     rowBufferSize: int   
@@ -104,7 +101,8 @@ type
   ColumnType* = tuple[nativeType: DpiNativeCType, 
                       dbType: DpiOracleType, 
                       colsize: int,
-                      sizeIsBytes : bool]
+                      sizeIsBytes : bool,
+                      scale : int] # scale only for numeric types recognised
   ColumnTypeList* = seq[ColumnType]
 
   # use dpiStmt_executeMany for bulk binds
@@ -368,7 +366,6 @@ template setRowId*(param : ParamTypeRef , rowid : ptr dpiRowid ) =
     param.buffer.setNotDbNull
     discard dpiVar_setFromRowid(param.paramVar,0,rowid)  
 
-
 template getColumnCount*( rs : var ResultSet) : int =
   ## returns the number of columns for the ResultSet
   rs.rsColumnNames.len  
@@ -446,7 +443,6 @@ template onSuccessExecute(context: ptr dpiContext, toprobe: untyped,
 template isExecuted*(ps: var PreparedStatement): bool =
   ## true if the statement was executed
   ps.executed
-
 
 proc createConnection*(octx: var OracleContext,
                          connectstring: string,
@@ -534,7 +530,6 @@ proc addBindParameter*(ps : var PreparedStatement,
   result = ParamTypeRef( bindPosition: BindInfo(kind: BindInfoType.byName,
                                                    paramName: paramName),
                               columnType: coltype,
-                              scale: 1, 
                               paramVar: nil,
                               buffer: nil,
                               rowBufferSize: rowCount)
@@ -556,7 +551,6 @@ proc addBindParameter*(ps : var PreparedStatement,
   result = ParamTypeRef( bindPosition: BindInfo(kind: BindInfoType.byPosition,
                          paramVal: idx),
                          columnType: coltype,
-                         scale: 1, 
                          paramVar: nil,
                          buffer: nil,
                          rowBufferSize: rowCount)
@@ -686,8 +680,7 @@ proc executeStatement*(prepStmt: var PreparedStatement,
                                            dbType: DpiOracleType(
                                            qinfo.typeinfo.oracleTypeNum),
                               colSize: qinfo.typeinfo.clientSizeInBytes.int,
-                              sizeIsBytes: true),
-                              scale: qinfo.typeinfo.scale,
+                              sizeIsBytes: true, scale: qinfo.typeinfo.scale.int),
                               paramVar: nil,
                               buffer: nil,
                               rowBufferSize: outRs.rsBufferedRows)
@@ -807,11 +800,8 @@ when isMainModule:
       if isSuccess(newPreparedStatement(conn, query2, pstmt)):
         var rs: ResultSet
 
-        let ct : ColumnType = (DpiNativeCType.INT64,
-                    DpiOracleType.OTNUMBER,1,false)
-
         addBindParameter(pstmt,
-          (DpiNativeCType.INT64,DpiOracleType.OTNUMBER,1,false),
+          (DpiNativeCType.INT64,DpiOracleType.OTNUMBER,1,false,1),
           "param1").setInt64(some(80.int64))
 
         if isSuccess(executeStatement(pstmt, rs, 10)):
@@ -836,7 +826,7 @@ when isMainModule:
           pstmt.destroy
 
         else:
-          echo getErrstr(octx)
+           echo getErrstr(octx)
       else:
         echo getErrstr(octx)
 
