@@ -37,7 +37,7 @@ the installer logs everything under the program files directory within the subdi
 
 My database was created with the nls_character set "AL32UTF8"
 
-To check your database you could query for:
+To check your database characterset you could query for:
 
 ```PLSQL
 select DECODE(parameter, 'NLS_CHARACTERSET', 'CHARACTER SET',
