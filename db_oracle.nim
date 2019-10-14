@@ -371,7 +371,12 @@ template setRowId*(param : ParamTypeRef , rowid : ptr dpiRowid ) =
     param.data.setDbNull
   else:  
     param.buffer.setNotDbNull
-    discard dpiVar_setFromRowid(param.paramVar,0,rowid)  
+    discard dpiVar_setFromRowid(param.paramVar,0,rowid)
+
+template fetchRefCursor*(param : ptr dpiData ) : ptr dpiStmt =
+  ## fetches a refCursorType out of the result column. at the moment only the
+  ## raw ODPI-C API could be used to consume the ref cursor
+  param.value.asStmt
 
 template getColumnCount*( rs : var ResultSet) : int =
   ## returns the number of columns for the ResultSet
@@ -505,12 +510,6 @@ template bindParameter(ps: var PreparedStatement, param: ParamTypeRef) =
          param.paramVar.addr,
          param.buffer.addr
         )
-
-template isParamPresent(ps : var PreparedStatement, paramName : string) : bool =
-  discard # TODO: implement
-
-template isParamPresent(ps : var PreparedStatement, paramIdx: BindIdx) : bool =
-  discard # TODO: implement
 
 template newColumnType*( nativeType : DpiNativeCType, 
                      dbType: DpiOracleType, 
