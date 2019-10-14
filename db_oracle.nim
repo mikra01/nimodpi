@@ -18,12 +18,13 @@ import nimodpi
     - implementation quirks.
     -
     - some features:
-    - resultset zero-copy approach: the caller is responsible for copying (helper templates present)
+    - resultset zero-copy approach: the caller is responsible for copying the data
+    - (helper templates present)
     - within the application domain. "peeking" data is possible via pointers
     - only the basic types are implemented (numeric, rowid, varchar2, timestamp)
     - pl/sql procedure exploitation is possible with in/out and inout-parameters
     - consuming refcursor is also possible (see demo.nim)
-    - TODO: implement LOB handling
+    - TODO: implement LOB/BLOB handling
     -
     - designing a vendor generic database API often leads to clumpsy workaround solutions.
       due to that it's out of scope of this project. it's more valueable to wrap the vendor
@@ -74,9 +75,9 @@ type
   BindInfoType = enum byPosition, byName
 
   BindInfo = object
-    # track the bindType. 
+    # tracks the bindType. 
     case kind*: BindInfoType
-      of byPosition: paramVal*: int
+      of byPosition: paramVal*: BindIdx
       of byName: paramName*: cstring
 
   ParamType* = object
@@ -162,15 +163,23 @@ template `[]`*(rs: var PreparedStatement, bindidx: BindIdx): ParamTypeRef =
   # retrieves the paramType for setting the parameter value by index
   # use the setParam templates for setting the value after that.
   # before fetching make sure that the parameter is already created
-  rs.boundParams[bindidx]
-
+  for i in rs.boundParams.low .. rs.boundParams.high:
+    if not rs.boundParams[i].isNil:
+      if rs.boundParams[i].bindPosition.kind == byPosition:
+        if rs.boundParams[i].bindPosition.paramVal == bindidx:
+          result = rs.boundParams[i]
+          return result
+  
+  raise newException(IOError, "PreparedStatement[] parameterIdx : " & $bindidx & " not found!" )
+  {.effects.}
+        
 template `[]`*(rs: var PreparedStatement, paramName: string): ParamTypeRef =
   # retrieves the pointer for setting the parameter value by paramname
   # before fetching make sure that the parameter is already created otherwise
   # an IOError is thrown
   for i in rs.boundParams.low .. rs.boundParams.high:
     if not rs.boundParams[i].isNil:
-      if rs.boundParams[i].bindPosition.kind == byPosition:
+      if rs.boundParams[i].bindPosition.kind == byName:
         if cmp(paramName,rs.boundParams[i].bindPosition.paramName) == 0:
           result = rs.boundParams[i]
           return result
@@ -183,9 +192,13 @@ template isDbNull*(val : ptr dpiData) : bool =
   val.isNull.bool
 
 template setDbNull*(val : ptr dpiData)  =
-  ## returns true if the value is dbNull (value not present)
-  val.isNull = true  
+  ## sets the value to dbNull (no value present)
+  val.isNull = 1.cint  
 
+template setNotDbNull*(val : ptr dpiData)  =
+  ## sets value present
+  val.isNull = 0.cint  
+  
 template fetchBoolean*(val : ptr dpiData) : Option[bool] =
   ## fetches the specified value as boolean. the value is copied
   if val.isDbNull:
@@ -193,11 +206,12 @@ template fetchBoolean*(val : ptr dpiData) : Option[bool] =
   else:
     some(val.value.asBoolean)
 
-template setBoolean*(param : ParamType, value : Option[bool] ) =
+template setBoolean*(param : ParamTypeRef, value : Option[bool] ) =
   ## bind parameter setter boolean type. this setter operates always with index 1
   if value.isNone:
      param.buffer.setDbNull
-  else:  
+  else:
+     param.buffer.setNotDbNull  
      param.buffer.asBoolean.value = value.some  
   
 # simple type conversion templates.
@@ -208,11 +222,12 @@ template fetchFloat*(val : ptr dpiData) : Option[float32] =
   else:
     some(val.value.asFloat.float32)
 
-template setFloat*( param : ParamType, value : Option[float32]) =
+template setFloat*( param : ParamTypeRef, value : Option[float32]) =
   ## bind parameter setter float32 type. this setter operates always with index 1
   if value.isNone:
     param.buffer.setDbNull
-  else:  
+  else:
+    param.buffer.setNotDbNull  
     param.buffer.asFloat.value = value.some
 
 template fetchDouble*(val : ptr dpiData) : Option[float64] =
@@ -222,11 +237,12 @@ template fetchDouble*(val : ptr dpiData) : Option[float64] =
   else:
     some(val.value.asDouble.float64)
 
-template setDouble*(param : ParamType, value : Option[float64]) =
+template setDouble*(param : ParamTypeRef, value : Option[float64]) =
   ## bind parameter setter float64 type. this setter operates always with index 1
   if value.isNone:
     param.buffer.setDbNull
   else:  
+    param.buffer.setNotDbNull
     param.buffer.asDouble = value.some   
   
 template fetchUInt64*(val : ptr dpiData) : Option[uint64] =
@@ -236,11 +252,12 @@ template fetchUInt64*(val : ptr dpiData) : Option[uint64] =
   else:
     some(val.value.asUint64)
 
-template setInt64*(param : ParamType, value : Option[int64]) =
+template setUInt64*(param : ParamTypeRef, value : Option[uint64]) =
   ## bind parameter setter uint64 type. this setter operates always with index 1
   if value.isNone:
     param.buffer.setDbNull
-  else:  
+  else:
+    param.buffer.setNotDbNull  
     param.buffer.asUint64 = value.some    
       
 template fetchInt64*(val : ptr dpiData) : Option[int64] =
@@ -250,12 +267,13 @@ template fetchInt64*(val : ptr dpiData) : Option[int64] =
   else:
     some(val.value.asInt64)
 
-template setInt64( param : ParamType, value : Option[int64]) =
+proc setInt64( param : ParamTypeRef, value : Option[int64]) =
    ## bind parameter setter int64 type. this setter operates always with index 1
    if value.isNone:
-    param.buffer.setDbNull
+     param.buffer.setDbNull
    else:  
-    param.buffer.asInt64 = value.some   
+     param.buffer.setNotDbNull
+     param.buffer.value.asInt64  = value.get   
 
 template fetchIntervalDS*(val : ptr dpiData ) : Option[Duration] =
   # todo: implement
@@ -265,11 +283,12 @@ template fetchIntervalDS*(val : ptr dpiData ) : Option[Duration] =
     some(val.toIntervalDs)
    
 
-template setIntervalDS*(param : ParamType , value : Option[Duration]) =
+template setIntervalDS*(param : ParamTypeRef , value : Option[Duration]) =
   ## bind parameter setter IntervalDS type. this setter operates always with index 1
   if value.isNone:
     param.buffer.setDbNull
   else:  
+    param.buffer.setNotDbNull
     param.buffer.value.asIntervalDS.fseconds = value.some.nanoseconds    
     param.buffer.value.asIntervalDS.seconds = value.some.seconds 
     param.buffer.value.asIntervalDS.minutes = value.some.minutes
@@ -283,11 +302,12 @@ template fetchDateTime*( val : ptr dpiData ) : Option[DateTime] =
   else:
     some(toDateTime(val))
 
-template setDateTime*(param : ParamType , value : Option[DateTime] ) = 
+template setDateTime*(param : ParamTypeRef , value : Option[DateTime] ) = 
   ## bind parameter setter DateTime type. this setter operates always with index 1
   if value.isNone:
     param.buffer.setDbNull
-  else:  
+  else:
+    param.buffer.setNotDbNull  
     let dt = cast[DateTime](some)
     let utcoffset = dt.utcOffset
     param.buffer.value.asTimestamp.year = dt.year
@@ -311,11 +331,12 @@ template fetchString*( val : ptr dpiData ) : Option[string] =
   else:
     some(toNimString(val))
 
-template setString*(param : ParamType , value : Option[string] ) = 
+template setString*(param : ParamTypeRef , value : Option[string] ) = 
   ## bind parameter setter string type. this setter operates always with index 1
   if value.isNone:
     param.buffer.setDbNull
-  else:  
+  else: 
+    param.buffer.setNotDbNull 
     discard dpiVar_setFromBytes(param.paramVar,0,addr(value.some[0]),value.some.len)    
   
 template fetchBytes*( val : ptr dpiData ) : Option[seq[byte]] =
@@ -325,24 +346,26 @@ template fetchBytes*( val : ptr dpiData ) : Option[seq[byte]] =
   else:
     some(toNimByteSeq(val))
 
-template setBytes*(param : ParamType , value: Option[seq[byte]] ) = 
+template setBytes*(param : ParamTypeRef , value: Option[seq[byte]] ) = 
   ## bind parameter setter seq[byte] type. this setter operates always with index 1
   ## the value is copied into the drivers domain 
   if value.isNone:
     param.data.setDbNull
-  else:  
+  else:
+    param.buffer.setNotDbNull  
     discard dpiVar_setFromBytes(param.paramVar,0,addr(value.some[0]),value.some.len)    
   
 template fetchRowId*( param : ptr dpiData ) : ptr dpiRowid =
   ## fetches the rowId (internal representation).
   param.value.asRowId 
 
-template setRowId*(param : ParamType , rowid : ptr dpiRowid ) =
+template setRowId*(param : ParamTypeRef , rowid : ptr dpiRowid ) =
   ## bind parameter setter boolean type. this setter operates always with index 1
   ## (todo: eval if the rowid could be nil)
   if value.isNone:
     param.data.setDbNull
   else:  
+    param.buffer.setNotDbNull
     discard dpiVar_setFromRowid(param.paramVar,0,rowid)  
 
 
@@ -355,12 +378,12 @@ proc getColumnTypeList*( rs : var ResultSet) : ColumnTypeList =
   for i in result.low .. result.high:
     result[i] = rs[i].columnType 
 
-template getNativeType*(pt: var ParamType): DpiNativeCType =
+template getNativeType*(pt: var ParamTypeRef): DpiNativeCType =
   ## peeks the native type of a param. useful to determine
   ## which type the result column would be
   pt.nativeType
 
-template getDbType*(pt : var ParamType): DpiOracleType =
+template getDbType*(pt : var ParamTypeRef): DpiOracleType =
   ## peeks the db type of the given param
   pt.dbType
 
@@ -447,59 +470,38 @@ proc releaseConnection*(conn: var OracleConnection): DpiResult =
 proc newPreparedStatement*(conn: var OracleConnection, 
                            query: var SqlQuery,
                            outPs: var PreparedStatement,
-                           stmtCacheKey: string = "", 
-                           bindParameterCount : int = 0): DpiResult =
+                           stmtCacheKey: string = "" ): DpiResult =
   ## constructs a new prepared statement object linked to the given specified query.
   ## the statement cache key is optional.
-  ## bindParameterCount needs to be specified if there are bindParameters present.
-  ## the default value is 0 which means "no bind parameter present"
   outPs.scrollable = false # always false due to not implemented
   outPs.query = query
   outPs.columnCount = 0
   outPs.relatedConn = conn
   outPs.executed = false
   outPs.stmtCacheKey = stmtCacheKey.cstring
-  outPs.boundParams = newSeq[ParamTypeRef](bindParameterCount)
+  outPs.boundParams = newSeq[ParamTypeRef](0)
   result = DpiResult(dpiConn_prepareStmt(conn.connection, 0.cint, query.rawSql,
       query.rawSql.len.uint32, outPs.stmtCacheKey,
       outPs.stmtCacheKey.len.uint32, outPs.pStmt.addr))
 
-template bindParameter(ps: var PreparedStatement, param: var ParamType,
-    size: int, sizeIsBytes: int) =
+template bindParameter(ps: var PreparedStatement, param: ParamTypeRef) =
   # internal proc which is processed after the param is completely populated
   var isArray: uint32 = 0
-  if ps.rsBufferedRows > 1:
+  if param.rowBufferSize > 1:
     isArray = 1
 
   discard dpiConn_newVar(
          ps.relatedConn.connection,
          cast[dpiOracleTypeNum](param.columnType.dbType.ord),
          cast[dpiNativeTypeNum](param.columnType.nativeType.ord),
-         ps.rsBufferedRows.uint32, #maxArraySize
-      size.uint32, #size
-      sizeIsBytes.cint, #sizeIsBytes
+         param.rowBufferSize.uint32, #maxArraySize
+      param.columnType.colsize.uint32, #size
+      param.columnType.sizeIsBytes.cint, #sizeIsBytes
       isArray.cint, # isArray
       nil,
       param.paramVar.addr,
       param.buffer.addr
       )
-  # FIXME: call bindBy after the values could be set by the caller
-  # order would be (arrayType) : setFromBytes, setNumElementsinArray, bindBy..
-  if param.bindPosition.kind == BindInfoType.byPosition:
-    discard DpiResult(dpiStmt_bindByPos(ps.pStmt,
-                                         param.bindPosition.paramVal.uint32,
-                                         param.paramVar
-                                        )
-                     )
-  elif param.bindPosition.kind == BindInfoType.byName:
-    discard DpiResult(dpiStmt_bindByName(ps.pStmt,
-                                         param.bindPosition.paramName,
-                                         param.bindPosition.paramName.len.uint32,
-                                         param.paramVar
-                                        )
-                      )
-
-
 
 template isParamPresent(ps : var PreparedStatement, paramName : string) : bool =
   discard # TODO: implement
@@ -513,40 +515,60 @@ template newColumnType*( nativeType : DpiNativeCType,
                      sizeIsBytes: bool = false  ) : ColumnType =
   ## construction proc for the ColumnType type. for numerical types colsize is always 1.
   ## only for varchars,blobs the colsize must be set (max). if sizeIsBytes is false,
-  ## the colsize must contain the number of characters not the bytecount                     
-  (nativeType : nativeType,dbType : dbType,colsize:colsize,sizeIsBytes:sizeIsBytes)  
+  ## the colsize must contain the number of characters not the bytecount.
+  ## TODO: templates for basic nim types                     
+  (nativeType : nativeType,dbType : dbType, colsize: colsize, sizeIsBytes:sizeIsBytes)  
 
-proc createBindParameter(ps : var PreparedStatement, 
+proc addBindParameter*(ps : var PreparedStatement, 
                          coltype : ColumnType,  
-                         paramName : string) : ref ParamType =
+                         paramName : string, 
+                         rowCount : int = 1) : ParamTypeRef =
   ## creates a bindparameter by parameterName. the parametername must be referenced within the
   ## query by :<paramName>
-  ## the parameter value can set with the [] operator on the preparedStatement.
+  ## the parameter value can be set with the typed setters on the ParamType.
   ## see https://oracle.github.io/odpi/doc/user_guide/data_types.html for supported type
   ## combinations.
   ## the type of the parameter can be in,out or in/out
   # todo: use template bindparameter
   # call bindBy only after the value is set.
-  discard
+  result = ParamTypeRef( bindPosition: BindInfo(kind: BindInfoType.byName,
+                                                   paramName: paramName),
+                              columnType: coltype,
+                              scale: 1, 
+                              paramVar: nil,
+                              buffer: nil,
+                              rowBufferSize: rowCount)
+  bindParameter(ps,result)
+  ps.boundParams.add(result)                            
 
-proc createBindParameter(ps : var PreparedStatement, 
+proc addBindParameter*(ps : var PreparedStatement, 
                          coltype : ColumnType, 
-                         idx : BindIdx) : ref ParamType =
+                         idx : BindIdx, 
+                         rowCount : int = 1) : ParamTypeRef =
   ## creates a bindparameter by parameter index. the parameterindex must be referenced
   ## within the query with :<paramIndex>.
-  ## the parameter value can set with the [] operator on the preparedStatement.
+  ## the parameter value can be set with the typed setters on the ParamType.
   ## see https://oracle.github.io/odpi/doc/user_guide/data_types.html for supported type
   ## combinations.
   ## the type of the parameter can be in, out or in/out
   # todo: use template bindParameter
   # cast[ParamType]new ParamType()
-  discard
+  result = ParamTypeRef( bindPosition: BindInfo(kind: BindInfoType.byPosition,
+                         paramVal: idx),
+                         columnType: coltype,
+                         scale: 1, 
+                         paramVar: nil,
+                         buffer: nil,
+                         rowBufferSize: rowCount)
+  bindParameter(ps,result)
+  ps.boundParams.add(result)                            
+
 
 proc addOutColumn(rs: var ResultSet, columnParam: ParamTypeRef) =
   ## binds out-parameters to the specified resultset according to the
   ## metadata given by the database
   var isArray: uint32 = 0
-  let index: int = columnParam.bindPosition.paramVal-1
+  let index: int = columnParam.bindPosition.paramVal.int-1
   # adjust index to nimIndex
   if rs.rsBufferedRows > 1:
     isArray = 1
@@ -610,23 +632,20 @@ proc executeStatement*(prepStmt: var PreparedStatement,
       if bp.rowBufferSize > 1:
         discard dpiVar_setNumElementsInArray(bp.paramVar,
                                              bp.rowBufferSize.uint32)
-      else:
-        discard
-        # single_param
-     # order would be (arrayType) : setFromBytes, setNumElementsinArray, bindBy..
-     # if param.bindPosition.kind == BindInfoType.byPosition:
-     # discard DpiResult(dpiStmt_bindByPos(ps.pStmt,
-     #                                    param.bindPosition.paramVal.uint32,
-     #                                    param.paramVar
-     #                                   )
-     #                )
-     # elif param.bindPosition.kind == BindInfoType.byName:
-     # discard DpiResult(dpiStmt_bindByName(ps.pStmt,
-     #                                    param.bindPosition.paramName,
-     #                                    param.bindPosition.paramName.len.uint32,
-     #                                    param.paramVar
-     #                                   )
-     #                 )
+      
+      if bp.bindPosition.kind == BindInfoType.byPosition:
+        discard DpiResult(dpiStmt_bindByPos(prepStmt.pStmt,
+                                         bp.bindPosition.paramVal.uint32,
+                                         bp.paramVar
+                                        )
+                     )
+      elif bp.bindPosition.kind == BindInfoType.byName:
+        discard DpiResult(dpiStmt_bindByName(prepStmt.pStmt,
+                                         bp.bindPosition.paramName,
+                                         bp.bindPosition.paramName.len.uint32,
+                                         bp.paramVar
+                                        )
+                      )
 
   if not prepStmt.isExecuted:
     # TODO: reset() needed
@@ -660,7 +679,7 @@ proc executeStatement*(prepStmt: var PreparedStatement,
           outRs.rsColumnNames[i-1] = colname
           outRs.rsOutputCols[i-1] = ParamTypeRef(
                               bindPosition: BindInfo(kind: BindInfoType.byPosition,
-                                                   paramVal: i),
+                                                   paramVal: BindIdx(i)),
                               queryInfo: qInfo,
                               columnType: (nativeType: DpiNativeCType(
                                            qinfo.typeinfo.defaultNativeTypeNum),
@@ -705,8 +724,7 @@ proc fetchNextRows*(rs: var ResultSet): DpiResult =
       rs.rsMoreRows = moreRows.bool
       rs.rsBufferRowIndex = bufferRowIndex.int
       rs.rsRowsFetched = rowsFetched.int
-
-
+ 
 iterator resultSetRowIterator*(rs: var ResultSet): DpiRow =
   ## iterates over the resultset row by row. no data copy is performed
   ## and the ptr type values should be copied into the application
@@ -782,14 +800,21 @@ when isMainModule:
                   COMMISSION_PCT, 
                   MANAGER_ID, 
                   DEPARTMENT_ID 
-       from hr.employees""")
+       from hr.employees where department_id = :param1  """)
     
       var pstmt: PreparedStatement
 
       if isSuccess(newPreparedStatement(conn, query2, pstmt)):
         var rs: ResultSet
 
-        if isSuccess(executeStatement(pstmt, rs, 2)):
+        let ct : ColumnType = (DpiNativeCType.INT64,
+                    DpiOracleType.OTNUMBER,1,false)
+
+        addBindParameter(pstmt,
+          (DpiNativeCType.INT64,DpiOracleType.OTNUMBER,1,false),
+          "param1").setInt64(some(80.int64))
+
+        if isSuccess(executeStatement(pstmt, rs, 10)):
           var ctl : ColumnTypeList = rs.getColumnTypeList
 
           for i in ctl.low .. ctl.high:
@@ -801,10 +826,12 @@ when isMainModule:
           echo rs.rsColumnNames[1] & " " & rs.rsColumnNames[2]
 
           for row in resultSetRowIterator(rs):
-            # output first two rows
+            # output first three and last two columns
            echo $fetchRowId(row[0].data) &
-             " " & $fetchDouble(row[1].data).get & 
-                 " " & fetchString(row[2].data).get
+             " " & $fetchDouble(row[1].data) & 
+                 " " & $fetchString(row[2].data) &
+                 " " & $fetchInt64(row[10].data) &
+                 " " & $fetchInt64(row[11].data)
         
           pstmt.destroy
 

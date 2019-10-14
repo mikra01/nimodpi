@@ -40,10 +40,52 @@ proc `$`* (p: var dpiTimestamp): string =
 
 proc `$`*(p: var ColumnType): string =
   "dbType:" & $p.dbType & " nativeType:" & $p.nativeType
-   
+
+proc `$`*(p: var BindInfo): string =
+  var bt : string
+  if p.kind == BindInfoType.byPosition:
+    bt = "by_position num: " & $p.paramVal.int
+  else:
+    bt = "by_name: "& $p.paramName
+  result = "bindinfo: " & bt  
+
+proc `$`*(p: ParamTypeRef): string =
+  result = $p.bindPosition & " " & $p.columnType & " rowbuffersize: " & $p.rowbuffersize
+
 proc `$`*(p: ptr dpiRowId): string =
   ## string representation of the rowid (10byte) - base64 encoded
   var str : cstring = "                    " #20 chars
   var cstringlen : uint32
   discard dpiRowid_getStringValue(p,str.addr,cstringlen.addr)
   return $str
+
+proc `$`*(p: Option[string]): string =
+  if p.isNone:
+    "<dbNull>"
+  else:
+    $p.get
+
+proc `$`*(p: Option[int64]): string =
+  if p.isNone:
+    "<dbNull>"
+  else:
+    $p.get    
+
+proc `$`*(p: Option[uint64]): string =
+  if p.isNone:
+    "<dbNull>"
+  else:
+    $p.get    
+
+proc `$`*(p: Option[float32]): string =
+  if p.isNone:
+    "<dbNull>"
+  else:
+    $p.get    
+            
+proc `$`*(p: Option[float64]): string =
+  if p.isNone:
+    "<dbNull>"
+  else:
+    $p.get    
+    
