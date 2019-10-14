@@ -51,7 +51,7 @@ import nimodpi
     - database resident connection pool is not tested but should work
     -
     - TODO: more types,bulk binds, implement tooling for easier sqlplus exploitaition,
-    - tooling for easy compiletime-query validation, examples
+    - tooling for easy compiletime-query validation, continous query notification, examples
     -
   ]#
 
@@ -205,7 +205,7 @@ template fetchBoolean*(val : ptr dpiData) : Option[bool] =
     some(val.value.asBoolean)
 
 template setBoolean*(param : ptr dpiData, value : Option[bool] ) =
-  ## bind parameter setter boolean type. this setter operates always with index 1
+  ## bind parameter setter boolean type.
   if value.isNone:
      param.setDbNull
   else:
@@ -221,7 +221,7 @@ template fetchFloat*(val : ptr dpiData) : Option[float32] =
     some(val.value.asFloat.float32)
 
 template setFloat*( param : ptr dpiData, value : Option[float32]) =
-  ## bind parameter setter float32 type. this setter operates always with index 1
+  ## bind parameter setter float32 type. 
   if value.isNone:
     param.setDbNull
   else:
@@ -236,7 +236,7 @@ template fetchDouble*(val : ptr dpiData) : Option[float64] =
     some(val.value.asDouble.float64)
 
 template setDouble*(param : ptr dpiData, value : Option[float64]) =
-  ## bind parameter setter float64 type. this setter operates always with index 1
+  ## bind parameter setter float64 type. 
   if value.isNone:
     param.setDbNull
   else:  
@@ -251,7 +251,7 @@ template fetchUInt64*(val : ptr dpiData) : Option[uint64] =
     some(val.value.asUint64)
 
 template setUInt64*(param : ptr dpiData, value : Option[uint64]) =
-  ## bind parameter setter uint64 type. this setter operates always with index 1
+  ## bind parameter setter uint64 type. 
   if value.isNone:
     param.setDbNull
   else:
@@ -266,7 +266,7 @@ template fetchInt64*(val : ptr dpiData) : Option[int64] =
     some(val.value.asInt64)
 
 proc setInt64( param : ptr dpiData, value : Option[int64]) =
-   ## bind parameter setter int64 type. this setter operates always with index 1
+   ## bind parameter setter int64 type. 
    if value.isNone:
      param.setDbNull
    else:  
@@ -365,8 +365,8 @@ template fetchRowId*( param : ptr dpiData ) : ptr dpiRowid =
   param.value.asRowId 
 
 template setRowId*(param : ParamTypeRef , rowid : ptr dpiRowid ) =
-  ## bind parameter setter boolean type. this setter operates always with index 1
-  ## (todo: eval if the rowid could be nil)
+  ## bind parameter setter boolean type. this setter operates always with index 0
+  ## (todo: eval if the rowid could be nil, and add arraybinding-feature)
   if value.isNone:
     param.data.setDbNull
   else:  
@@ -375,7 +375,8 @@ template setRowId*(param : ParamTypeRef , rowid : ptr dpiRowid ) =
 
 template fetchRefCursor*(param : ptr dpiData ) : ptr dpiStmt =
   ## fetches a refCursorType out of the result column. at the moment only the
-  ## raw ODPI-C API could be used to consume the ref cursor
+  ## raw ODPI-C API could be used to consume the ref cursor.
+  # todo: construct a new resultSet out of the refCursor
   param.value.asStmt
 
 template getColumnCount*( rs : var ResultSet) : int =
@@ -729,7 +730,7 @@ iterator resultSetRowIterator*(rs: var ResultSet): DpiRow =
   ## and the ptr type values should be copied into the application
   ## domain before the next window is requested.
   ## do not use this iterator in conjunction with fetchNextRows because
-  ## it's used internally.
+  ## it's already used internally.
   ## in an error case an IOException is thrown with the error message retrieved
   ## out of the context.
   var p: DpiRow = newSeq[DpiRowElement](rs.rsOutputCols.len)
@@ -825,6 +826,8 @@ when isMainModule:
 
           for row in resultSetRowIterator(rs):
             # output first three and last two columns
+            # TODO: fetch column by columnName
+            # TODO: example with transaction
            echo $fetchRowId(row[0].data) &
              " " & $fetchDouble(row[1].data) & 
                  " " & $fetchString(row[2].data) &
