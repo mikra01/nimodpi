@@ -774,7 +774,8 @@ template withTransaction*( dbconn : OracleConnection, rc : var DpiResult, body: 
   ## used to encapsulate the operation within a transaction.
   ## if an exception is thrown (within the body) the transaction will be rolled back.
   ## note that a dml operation creates a implicit transaction.
-  ## the DpiResult is used as a feedback channel on the rollback-operation      
+  ## the DpiResult is used as a feedback channel on the commit/rollback-operation. at the
+  ## moment it contains only the returncode from the commit/rolback ODPI-C call      
   block:
     try:
       body
