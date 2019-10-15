@@ -151,7 +151,7 @@ template `[]`*(row : DpiRow, colname : string): DpiRowElement =
       rowelem = row[i]
       break;
   rowelem
-  
+
 template `[]`*(data: ptr dpiData, idx: int): ptr dpiData =
   ## direct access of the cell(row) within the columnbuffer by index
   cast[ptr dpiData]((cast[int](data)) + (sizeof(dpiData)*idx))
@@ -769,6 +769,19 @@ iterator resultSetRowIterator*(rs: var ResultSet): DpiRow =
         {.effects.}         
       rs.rsCurrRow = 0
 
+
+template withTransaction*( dbconn : OracleConnection, rc : var DpiResult, body: untyped) =
+  ## used to encapsulate the operation within a transaction.
+  ## if an exception is thrown (within the body) the transaction will be rolled back.
+  ## note that a dml operation creates a implicit transaction.
+  ## the DpiResult is used as a feedback channel on the rollback-operation      
+  block:
+    try:
+      body
+      rc = DpiResult(dpiConn_commit(dbconn.connection))
+    except:
+      rc = DpiResult(dpiConn_rollback(dbconn.connection))
+      raise
 
 when isMainModule: 
   ## the HR Schema is used (XE) for the following tests
