@@ -113,8 +113,9 @@ type
 
   PreparedStatement* = object
     relatedConn: OracleConnection
+    inheritedFrom : ref PreparedStatement # tracks parent ps 
     query*: SqlQuery
-    boundParams: ParamTypeList      # mixed in/out or inout
+    boundParams: ParamTypeList  # mixed in/out or inout
     stmtCacheKey*: cstring
     scrollable: bool            # unused
     executed: bool              # quirky flag used to track the state
@@ -122,7 +123,7 @@ type
                                 # fetchArraySize : int
     pStmt: ptr dpiStmt
     statementInfo*: dpiStmtInfo # populated within execute stage
-                                # following members are resultset related
+
     rsOutputCols: ParamTypeList
     rsCurrRow*: int             # reserved for iterating
     rsMoreRows*: bool           #
@@ -501,6 +502,7 @@ proc newPreparedStatement*(conn: var OracleConnection,
   outPs.executed = false
   outPs.stmtCacheKey = stmtCacheKey.cstring
   outPs.boundParams = newSeq[ParamTypeRef](0)
+ 
   result = DpiResult(dpiConn_prepareStmt(conn.connection, 0.cint, query.rawSql,
       query.rawSql.len.uint32, outPs.stmtCacheKey,
       outPs.stmtCacheKey.len.uint32, outPs.pStmt.addr))
@@ -627,6 +629,15 @@ proc destroy*(prepStmt: var PreparedStatement) =
 proc reset(rs: var ResultSet) =
   ## resets the resultset ready for re-execution (wind-back)
   # todo: implement
+  discard
+
+
+proc openRefCursor*(param : ParamTypeRef, 
+                    outRs : var ResultSet,fetchArraySize: int, # number of rows per column
+                    dpiMode: uint32 = DpiModeExec.DEFAULTMODE.ord): DpiResult =
+  discard
+
+proc closeRefCursor*(prepStmt : var PreparedStatement) = 
   discard
 
 proc executeStatement*(prepStmt: var PreparedStatement,
@@ -796,7 +807,7 @@ when isMainModule:
                              (PORT = 1521))
                              (CONNECT_DATA =(SERVER = DEDICATED)
                              (SERVICE_NAME = XEPDB1 )
-                            ))"""
+                            ))""" 
 
   var octx: OracleContext
   var errmsg: string
@@ -814,7 +825,7 @@ when isMainModule:
           select 300 , 'äöü3' from dual
           """)
 
-      var query2: SqlQuery = newSqlQuery("""select 
+      var query2: SqlQuery = newSqlQuery(""" select 
                   rowid,
                   EMPLOYEE_ID, 
                   FIRST_NAME, 
@@ -862,6 +873,8 @@ when isMainModule:
                  " " & $fetchInt64(row[11].data)
         
           pstmt.destroy
+          # TODO: refCursor impl
+          # TODO: plsql example with types and select * from table()
 
         else:
            echo getErrstr(octx)
