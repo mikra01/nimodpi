@@ -134,12 +134,24 @@ type
   ResultSet* = PreparedStatement
   # type alias
 
-  DpiRowElement* = tuple[ columnType : ColumnType, data : ptr dpiData  ]
+  DpiRowElement* = tuple[ columnType : ColumnType, 
+                          columnName : string,
+                          data : ptr dpiData  ]
   DpiRow* = seq[DpiRowElement]
 
 include odpi_obj2string
 include odpi_to_nimtype
 
+template `[]`*(row : DpiRow, colname : string): DpiRowElement =
+  ## access of the iterators DpiRowElement by column name.
+  ## if the column name is not present an empty row is returned
+  var rowelem : DpiRowElement
+  for i in row.low .. row.high:
+    if cmp(colname,row[i].columnName) == 0:
+      rowelem = row[i]
+      break;
+  rowelem
+  
 template `[]`*(data: ptr dpiData, idx: int): ptr dpiData =
   ## direct access of the cell(row) within the columnbuffer by index
   cast[ptr dpiData]((cast[int](data)) + (sizeof(dpiData)*idx))
@@ -745,6 +757,7 @@ iterator resultSetRowIterator*(rs: var ResultSet): DpiRow =
   while rs.rsCurrRow < rs.rsRowsFetched:
     for i in rs.rsOutputCols.low .. rs.rsOutputCols.high:
       p[i] = (columnType : paramtypes[i],
+              columnname : rs.rsColumnNames[i],
               data : rs.rsOutputCols[i][rs.rsCurrRow])
       # construct column
     yield p
@@ -825,12 +838,12 @@ when isMainModule:
           echo rs.rsColumnNames[1] & " " & rs.rsColumnNames[2]
 
           for row in resultSetRowIterator(rs):
-            # output first three and last two columns
-            # TODO: fetch column by columnName
+            # retrieve column values by columnname or index
             # TODO: example with transaction
            echo $fetchRowId(row[0].data) &
              " " & $fetchDouble(row[1].data) & 
-                 " " & $fetchString(row[2].data) &
+                 " " & $fetchString(row["FIRST_NAME"].data) &
+                 " " & $fetchString(row["LAST_NAME"].data) &
                  " " & $fetchInt64(row[10].data) &
                  " " & $fetchInt64(row[11].data)
         
