@@ -89,7 +89,8 @@ type
     # tracks the native- and dbtype
     paramVar: ptr dpiVar
     buffer: ptr dpiData
-    rowBufferSize: int   
+    rowBufferSize: int
+    isPlSqlArray : bool   
     # number of buffered rows
     ## for single parameters always 1 - for columnar parameters > 1 up to
     ## the given arraySize
@@ -330,6 +331,7 @@ proc releaseConnection*(conn: var OracleConnection): DpiResult =
 proc newPreparedStatement*(conn: var OracleConnection, 
                            query: var SqlQuery,
                            outPs: var PreparedStatement,
+                           bufferedRows : int,
                            stmtCacheKey: string = "" ) =
   ## constructs a new prepared statement object linked to the given specified query.
   ## the statement cache key is optional.
@@ -341,19 +343,28 @@ proc newPreparedStatement*(conn: var OracleConnection,
   outPs.executed = false 
   outPs.stmtCacheKey = stmtCacheKey.cstring
   outPs.boundParams = newSeq[ParamTypeRef](0)
- 
+  outPs.rsBufferedRows = bufferedRows
+
   if DpiResult(dpiConn_prepareStmt(conn.connection, 0.cint, query.rawSql,
       query.rawSql.len.uint32, outPs.stmtCacheKey,
       outPs.stmtCacheKey.len.uint32, outPs.pStmt.addr)) == DpiResult.FAILURE:
-    raise newException(IOError, "bindParameter: " & 
-        "error while calling dpiConn_newVar : " & getErrstr(conn.context) )
+    raise newException(IOError, "newPreparedStatement: " & 
+      getErrstr(conn.context) )
+    {.effects.}           
+  
+  if DpiResult(dpiStmt_setFetchArraySize(
+                                         outPs.pStmt, 
+                                         bufferedRows.uint32)
+              ) == DpiResult.FAILURE:
+    raise newException(IOError, "newPreparedStatement: " & 
+      getErrstr(conn.context) )
     {.effects.}           
 
 
 template bindParameter(ps: var PreparedStatement, param: ParamTypeRef) =
   # internal template to create a new in/out/inout binding variable
   var isArray: uint32 = 0
-  if param.rowBufferSize > 1:
+  if param.isPlSqlArray:
     isArray = 1
 
   if DpiResult(dpiConn_newVar(
@@ -385,21 +396,27 @@ template newColumnType*( nativeType : DpiNativeCType,
    scale: scale)  
 
 
-proc addBindParameter(ps : var PreparedStatement, bindInfo : BindInfo,
-                      coltype: ColumnType, rowCount : int) : ParamTypeRef =
+proc addBindParameter(ps : var PreparedStatement, 
+                      bindInfo : BindInfo,
+                      coltype: ColumnType, 
+                      isPlSqlArray : bool,
+                      boundRows : int) : ParamTypeRef =
   result = ParamTypeRef( bindPosition: bindInfo,
                          columnType: coltype,
                          paramVar: nil,
                          buffer: nil,
-                         rowBufferSize: rowCount)
+                         rowBufferSize: boundRows,
+                         # params rowbuffer always inherited 
+                         # from statements rowbuffer
+                         isPlSqlArray : isPlSqlArray)
   bindParameter(ps,result)
   ps.boundParams.add(result)
 
 
 proc addBindParameter*(ps : var PreparedStatement, 
                          coltype : ColumnType,  
-                         paramName : string,  
-                         rowCount : int = 1) : ParamTypeRef =
+                         paramName : string,boundRows : int,  
+                         isPlSqlArray : bool = false) : ParamTypeRef =
   ## creates a bindparameter by parameterName. throws IOException in case of error.
   ## see https://oracle.github.io/odpi/doc/user_guide/data_types.html for supported type
   ## combinations of ColumnType.
@@ -410,12 +427,12 @@ proc addBindParameter*(ps : var PreparedStatement,
   ## but does not to be specified
   addBindParameter(ps, BindInfo(kind: BindInfoType.byName,
                                 paramName: paramName),
-                    coltype,rowCount)
+                    coltype,isPlSqlArray,boundRows)
   
 proc addBindParameter*(ps : var PreparedStatement, 
                          coltype : ColumnType, 
-                         idx : BindIdx, 
-                         rowCount : int = 1) : ParamTypeRef =
+                         idx : BindIdx, boundRows : int,
+                         isPlSqlArray : bool = false) : ParamTypeRef =
   ## creates a bindparameter by parameter index. throws IOException in case of error.
   ## see https://oracle.github.io/odpi/doc/user_guide/data_types.html for supported type
   ## combinations of ColumnType.
@@ -428,7 +445,7 @@ proc addBindParameter*(ps : var PreparedStatement,
   # cast[ParamType]new ParamType()
   addBindParameter(ps, BindInfo(kind: BindInfoType.byPosition,
                                 paramVal: idx),
-                  coltype,rowCount)
+                  coltype,isPlSqlArray,boundRows)
 
 
 proc addOutColumn(rs: var ResultSet, columnParam: ParamTypeRef) =
@@ -468,25 +485,18 @@ proc reset(rs: var ResultSet) =
 
 proc executeAndInitResultSet(prepStmt : var PreparedStatement,
                          dpiMode: uint32 = DpiModeExec.DEFAULTMODE.ord,
-                         fetchArraySize : int, isRefCursor : bool = false) : DpiResult =
+                         isRefCursor : bool = false) : DpiResult =
   # internal proc. initialises the derived ResultSet 
   # from the given preparedStatement by calling execute on it
   # TODO: reset() needed
   prepStmt.rsMoreRows = true
   prepStmt.rsRowsFetched = 0
-  if DpiResult(dpiStmt_setFetchArraySize(
-                                         prepStmt.pStmt, 
-                                         fetchArraySize.uint32)
-              ) == DpiResult.FAILURE:
-    raise newException(IOError, "executeAndInitResultSet: " & 
-      getErrstr(prepStmt.relatedConn.context) )
-    {.effects.}           
         
   # sets the given number of rows per column
 
-  prepStmt.rsBufferedRows = fetchArraySize
+  # prepStmt.rsBufferedRows = fetchArraySize
   
-  if not isRefCursor:
+  if not isRefCursor: 
   # TODO: get rid of quirky isRefCursor flag   
     result = DpiResult(dpiStmt_execute(prepStmt.pStmt,
                                        dpiMode,
@@ -496,7 +506,12 @@ proc executeAndInitResultSet(prepStmt : var PreparedStatement,
   else:
     result = DpiResult.SUCCESS
     discard dpiStmt_getNumQueryColumns(prepStmt.pStmt, prepStmt.columnCount.addr)
-   
+    if DpiResult(dpiStmt_setFetchArraySize(prepStmt.pStmt,
+                                           prepStmt.rsBufferedRows.uint32)
+                                           ) == DpiResult.FAILURE:
+      raise newException(IOError, "newPreparedStatement: " & getErrstr(prepStmt.relatedConn.context) )
+      {.effects.}           
+
 
   if result == DpiResult.SUCCESS:
     if prepStmt.rsOutputCols.len <= 0:
@@ -530,10 +545,9 @@ proc executeAndInitResultSet(prepStmt : var PreparedStatement,
         addOutColumn(prepStmt,prepStmt.rsOutputCols[i-1])
 
 
-proc openRefCursor*(conn: OracleConnection,param : ParamTypeRef, 
-                    outRs : var ResultSet,
-                    dpiMode: uint32 = DpiModeExec.DEFAULTMODE.ord,
-                    fetchArraySize: int ) =
+proc openRefCursor*(ps: PreparedStatement,param : ParamTypeRef, 
+                    outRs : var ResultSet, bufferedRows : int,
+                    dpiMode: uint32 = DpiModeExec.DEFAULTMODE.ord) =
   ## opens the refcursor on the specified bind parameter. executeStatement must be called
   ## before open it.
   ## throws IOError in case of an error
@@ -541,8 +555,9 @@ proc openRefCursor*(conn: OracleConnection,param : ParamTypeRef,
   if param.columnType.nativeType == DpiNativeCType.STMT and 
     param.columnType.dbType == DpiOracleType.OTSTMT:         
     outRs.pstmt = param[0].fetchRefCursor
-    outRs.relatedConn = conn
-    if DpiResult(executeAndInitResultSet(outRs,dpiMode,fetchArraySize,true)) ==
+    outRs.relatedConn = ps.relatedConn
+    outRs.rsBufferedRows = bufferedRows
+    if DpiResult(executeAndInitResultSet(outRs,dpiMode,true)) ==
       DpiResult.FAILURE:
       raise newException(IOError, "openRefCursor: " & 
        getErrstr(outRs.relatedConn.context) )
@@ -559,7 +574,6 @@ proc closeRefCursor*(prepStmt : var ResultSet) =
 
 proc executeStatement*(prepStmt: var PreparedStatement,
                         outRs: var ResultSet,
-                        fetchArraySize: int, # number of rows per column
                         dpiMode: uint32 = DpiModeExec.DEFAULTMODE.ord) =
   ## the results can be fetched
   ## on a col by col base. once executed the bound columns can be reused
@@ -599,7 +613,7 @@ proc executeStatement*(prepStmt: var PreparedStatement,
   
 
   if not prepStmt.isExecuted:
-    if DpiResult(prepStmt.executeAndInitResultSet(dpiMode,fetchArraySize)) ==
+    if DpiResult(prepStmt.executeAndInitResultSet(dpiMode,false)) ==
       DpiResult.FAILURE:
       raise newException(IOError, "executeStatement/initResultSet: " & 
                          getErrstr(prepStmt.relatedConn.context) )
@@ -732,15 +746,15 @@ when isMainModule:
     
     var pstmt: PreparedStatement
 
-    newPreparedStatement(conn, query2, pstmt)
+    newPreparedStatement(conn, query2, pstmt,10)
     var rs: ResultSet
 
     var param =  addBindParameter(pstmt,
                      Int64ColumnTypeParam,
-                      "param1")
+                      "param1",1)
     param[0].setInt64(some(80.int64))
 
-    executeStatement(pstmt, rs, 10)
+    executeStatement(pstmt, rs)
     var ctl : ColumnTypeList = rs.getColumnTypeList
 
     for i in ctl.low .. ctl.high:
@@ -761,7 +775,10 @@ when isMainModule:
     echo "query1 executed - param department_id = 80 "
     # rerun preparedStatement with different parameter value    
     param[0].setInt64(some(10.int64))
-    executeStatement(pstmt, rs, 10)
+    executeStatement(pstmt, rs)
+    # FIXME: reducing fetcharraysize leads to results from previous run
+    # FIXME: set fetchArraySize at newPreparedStatement
+    # FIXME: change name of input parameter array buffer
 
     for row in resultSetRowIterator(rs):
       # retrieve column values by columnname or index
@@ -782,7 +799,7 @@ when isMainModule:
             end; """ )
 
     # refcursor example
-    newPreparedStatement(conn,refCursorQuery, pstmt)
+    newPreparedStatement(conn,refCursorQuery, pstmt,1)
  
     param =  addBindParameter(pstmt,RefCursorColumnTypeParam,
                                          BindIdx(1),1)
@@ -790,23 +807,21 @@ when isMainModule:
                                          BindIdx(2),1)
     let deptId =  addBindParameter(pstmt,Int64ColumnTypeParam,
                                          BindIdx(3),1)
-    deptId[0].setInt64(some(10.int64))
+    deptId[0].setInt64(some(80.int64))
 
-    executeStatement(pstmt, rs, 1)
+    executeStatement(pstmt, rs)
     var outRs : ResultSet
-    openRefCursor(conn,param,outRs,
-                                     DpiModeExec.DEFAULTMODE.ord,
-                                     1 )
+    openRefCursor(pstmt,param,outRs,1,DpiModeExec.DEFAULTMODE.ord)
+                                    
     echo "refCursor 1 results: "
     
     for row in resultSetRowIterator(outRs):
       echo $fetchString(row[0].data) 
 
     var outRs2 : ResultSet
-    openRefCursor(conn,param2,outRs2,
-                                     DpiModeExec.DEFAULTMODE.ord,
-                                     5 )
-    echo "refCursor 2 results: filter with department_id = 10 "
+    openRefCursor(pstmt,param2,outRs2,10,DpiModeExec.DEFAULTMODE.ord)
+                                     
+    echo "refCursor 2 results: filter with department_id = 80 "
     
     for row in resultSetRowIterator(outRs2):
       echo $fetchString(row[0].data) & " " & $fetchString(row[1].data) 
