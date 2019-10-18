@@ -70,7 +70,7 @@ type
     connection: ptr dpiConn
     context: OracleContext
 
-  BindIdx = distinct range[1.int .. int.high ]
+  BindIdx = distinct range[1.int .. int.high]
  
   BindInfoType = enum byPosition, byName
 
@@ -245,6 +245,12 @@ template newParamTypeList(len: int): ParamTypeList =
   # internal template ParamTypeList construction
   newSeq[ParamTypeRef](len)
 
+template isSuccess*(result: DpiResult): bool =
+  result == DpiResult.SUCCESS
+
+template isFailure*(result: DpiResult): bool =
+  result == DpiResult.FAILURE
+  
 proc newSqlQuery*(sql: string): SqlQuery =
   ## template to construct a SqlQuery type
   SqlQuery(rawSql: sql.cstring)
@@ -261,7 +267,7 @@ proc newOracleContext*(encoding: NlsLang, authMode: DpiAuthMode,
        dpiContext_create(DPI_MAJOR_VERSION, DPI_MINOR_VERSION, addr(
        outCtx.oracleContext), ei.addr)
     )
-  if result == DpiResult.SUCCESS:
+  if result.isSuccess:
     discard dpiContext_initCommonCreateParams(outCtx.oracleContext,
         outCtx.commonParams.addr)
     discard dpiContext_initConnCreateParams(outCtx.oracleContext,
@@ -286,26 +292,11 @@ template getErrstr*(ocontext: var OracleContext): string =
   dpiContext_getError(ocontext.oracleContext, ei.addr)
   $ei
 
-template isSuccess*(result: DpiResult): bool =
-  result == DpiResult.SUCCESS
-
-template onSuccessExecute(context: ptr dpiContext, toprobe: untyped,
-    body: untyped) =
-  ## template to wrap the boilerplate errorinfo code.
-  ## used for the tests 
-  var err: dpiErrorInfo
-  if toprobe < DpiResult.SUCCESS.ord:
-    dpiContext_getError(context, err.addr)
-    echo $err
-  else:
-    body
-
-
 proc createConnection*(octx: var OracleContext,
                          connectstring: string,
                          username: string,
                          passwd: string,
-                             ocOut: var OracleConnection) =
+                         ocOut: var OracleConnection) =
   ## creates a connection for the given context and credentials. 
   ## throws IOException in an error case
   ocOut.context = octx
@@ -374,7 +365,7 @@ template bindParameter(ps: var PreparedStatement, param: ParamTypeRef) =
          nil,
          param.paramVar.addr,
          param.buffer.addr
-        ) ) == DpiResult.FAILURE:
+        ) ).isFailure:
     raise newException(IOError, "bindParameter: " & 
           "error while calling dpiConn_newVar : " & getErrstr(ps.relatedConn.context) )
     {.effects.}           
@@ -452,26 +443,28 @@ proc addOutColumn(rs: var ResultSet, columnParam: ParamTypeRef) =
   let index: int = columnParam.bindPosition.paramVal.int-1
   rs.rsOutputCols[index] = columnParam
   bindParameter(rs,columnParam)
-  if DpiResult(dpiStmt_define(rs.pStmt, (index+1).uint32,columnParam.paramVar)) ==
-    DpiResult.FAILURE:
+  if DpiResult(dpiStmt_define(rs.pStmt,
+                                 (index+1).uint32,
+                                 columnParam.paramVar)).isFailure:
     raise newException(IOError, "addOutColumn: " & $columnParam & 
       getErrstr(rs.relatedConn.context) )
     {.effects.}   
  
  
 proc destroy*(prepStmt: var PreparedStatement) =
-  ## frees the internal resources. this should be called if
+  ## frees the preparedStatements internal resources. 
+  ## this should be called if
   ## the prepared statement is no longer in use.
   ## additional resources of a present resultSet
-  ## are also freed
-  # resultSet present? -> dispose dpiVars
-  # bind-parameters present? -> dispose dpiVars
+  ## are also freed. a preparedStatement with refCursor can not
+  ## be reused.
 
   for i in prepStmt.boundParams.low .. prepStmt.boundParams.high:
     discard dpiVar_release(prepStmt.boundParams[i].paramVar)
   for i in prepStmt.rsOutputCols.low .. prepStmt.rsOutputCols.high:
     discard dpiVar_release(prepStmt.rsOutputCols[i].paramVar)
-
+  prepStmt.boundParams.setLen(0)
+  prepStmt.rsOutputCols.setLen(0)
   discard dpiStmt_release(prepStmt.pStmt)
 
 
@@ -483,10 +476,6 @@ proc executeAndInitResultSet(prepStmt : var PreparedStatement,
   # TODO: reset() needed
   prepStmt.rsMoreRows = true
   prepStmt.rsRowsFetched = 0
-        
-  # sets the given number of rows per column
-
-  # prepStmt.rsBufferedRows = fetchArraySize
   
   if not isRefCursor: 
   # TODO: get rid of quirky isRefCursor flag   
@@ -498,14 +487,15 @@ proc executeAndInitResultSet(prepStmt : var PreparedStatement,
   else:
     result = DpiResult.SUCCESS
     discard dpiStmt_getNumQueryColumns(prepStmt.pStmt, prepStmt.columnCount.addr)
-    if DpiResult(dpiStmt_setFetchArraySize(prepStmt.pStmt,
-                                           prepStmt.rsBufferedRows.uint32)
-                                           ) == DpiResult.FAILURE:
+    if DpiResult(
+           dpiStmt_setFetchArraySize(prepStmt.pStmt,
+                                     prepStmt.rsBufferedRows.uint32)
+                                    ).isFailure:
       raise newException(IOError, "newPreparedStatement: " & getErrstr(prepStmt.relatedConn.context) )
       {.effects.}           
 
 
-  if result == DpiResult.SUCCESS:
+  if result.isSuccess:
     if prepStmt.rsOutputCols.len <= 0:
       # create the needed buffercolumns(resultset) automatically
       # only once
@@ -538,14 +528,16 @@ proc executeAndInitResultSet(prepStmt : var PreparedStatement,
         addOutColumn(prepStmt,prepStmt.rsOutputCols[i-1])
 
 
-proc openRefCursor*(ps: PreparedStatement,param : ParamTypeRef, 
-                    outRs : var ResultSet, bufferedRows : int,
+proc openRefCursor*(ps: PreparedStatement,param : ParamTypeRef,
+                    outRefCursor : var ResultSet, 
+                    bufferedRows : int,
                     dpiMode: uint32 = DpiModeExec.DEFAULTMODE.ord) =
   ## opens the refcursor on the specified bind parameter. executeStatement must be called
   ## before open it.
   ## throws IOError in case of an error
  
   if param.isFetched:
+    # quirky
     raise newException(IOError, "openRefCursor: " & 
       """ reexecute of the preparedStatement with refCursor not supported """ ) 
     {.effects.} 
@@ -553,13 +545,15 @@ proc openRefCursor*(ps: PreparedStatement,param : ParamTypeRef,
   if param.columnType.nativeType == DpiNativeCType.STMT and 
     param.columnType.dbType == DpiOracleType.OTSTMT:
     param.isFetched = true         
-    outRs.pstmt = param[0].fetchRefCursor
-    outRs.relatedConn = ps.relatedConn
-    outRs.rsBufferedRows = bufferedRows
-    if DpiResult(executeAndInitResultSet(outRs,dpiMode,true)) ==
-      DpiResult.FAILURE:
+    outRefCursor.pstmt = param[0].fetchRefCursor
+    outRefCursor.relatedConn = ps.relatedConn
+    outRefCursor.rsBufferedRows = bufferedRows
+    if DpiResult(
+                     executeAndInitResultSet(outRefCursor,
+                                             dpiMode,
+                                             true)).isFailure:
       raise newException(IOError, "openRefCursor: " & 
-       getErrstr(outRs.relatedConn.context) )
+       getErrstr(outRefCursor.relatedConn.context) )
     {.effects.}           
   else:
     raise newException(IOError, "openRefCursor: " & 
@@ -569,10 +563,10 @@ proc openRefCursor*(ps: PreparedStatement,param : ParamTypeRef,
     {.effects.}         
 
 proc closeRefCursor*(rs : var ResultSet) =
-  ## closes the refCursor without affecting the parent (inherited) PreparedStatement   
+  ## releases refCursors output-binds  
   for i in rs.rsOutputCols.low .. rs.rsOutputCols.high:
     discard dpiVar_release(rs.rsOutputCols[i].paramVar)
-
+  rs.rsOutputCols.setLen(0)
 
 proc executeStatement*(prepStmt: var PreparedStatement,
                         outRs: var ResultSet,
@@ -596,7 +590,7 @@ proc executeStatement*(prepStmt: var PreparedStatement,
                                          bp.bindPosition.paramVal.uint32,
                                          bp.paramVar
                                         )
-                     ) == DpiResult.FAILURE:
+                     ).isFailure:
           raise newException(IOError, "executeStatement/bindByPosition: " & 
                       getErrstr(prepStmt.relatedConn.context) )
           {.effects.}
@@ -643,11 +637,11 @@ proc fetchNextRows*(rs: var ResultSet): DpiResult =
     var rowsFetched: uint32 #out
 
     result = DpiResult(dpiStmt_fetchRows(rs.pStmt,
-                                       rs.rsBufferedRows.uint32,
-                                       bufferRowIndex.addr,
-                                       rowsFetched.addr,
-                                       moreRows.addr))
-    if result == DpiResult.SUCCESS:
+                                         rs.rsBufferedRows.uint32,
+                                         bufferRowIndex.addr,
+                                         rowsFetched.addr,
+                                        moreRows.addr))
+    if result.isSuccess:
       rs.rsMoreRows = moreRows.bool
       rs.rsBufferRowIndex = bufferRowIndex.int
       rs.rsRowsFetched = rowsFetched.int
@@ -665,11 +659,10 @@ iterator resultSetRowIterator*(rs: var ResultSet): DpiRow =
   rs.rsCurrRow = 0
   rs.rsRowsFetched = 0
 
-  if rs.rsRowsFetched == 0:
-    if fetchNextRows(rs) != DpiResult.SUCCESS:
-      raise newException(IOError, "resultSetRowIterator: " & 
+  if fetchNextRows(rs).isFailure:
+    raise newException(IOError, "resultSetRowIterator: " & 
         getErrstr(rs.relatedConn.context) )
-      {.effects.}
+    {.effects.}
   while rs.rsCurrRow < rs.rsRowsFetched:
     for i in rs.rsOutputCols.low .. rs.rsOutputCols.high:
       p[i] = (columnType : paramtypes[i],
@@ -679,7 +672,7 @@ iterator resultSetRowIterator*(rs: var ResultSet): DpiRow =
     yield p
     inc rs.rsCurrRow
     if rs.rsCurrRow == rs.rsRowsFetched and rs.rsMoreRows:
-      if fetchNextRows(rs) != DpiResult.SUCCESS:
+      if fetchNextRows(rs).isFailure:
         raise newException(IOError, "resultSetRowIterator: " & 
           getErrstr(rs.relatedConn.context) )
         {.effects.}         
@@ -699,6 +692,23 @@ template withTransaction*( dbconn : OracleConnection, rc : var DpiResult, body: 
     except:
       rc = DpiResult(dpiConn_rollback(dbconn.connection))
       raise
+
+template withRefCursor*( rs : var ResultSet, body : untyped ) =
+  ## releases the bound refCursor output parameters after leaving
+  ## the block. 
+  try:
+    body
+  finally:
+    rs.closeRefCursor
+
+template withPreparedStatement*( ps : var PreparedStatement, body : untyped ) =
+  ## releases the preparedStatement after leaving
+  ## the block.
+  try:
+    body
+  finally:
+    ps.destroy
+  
 
 when isMainModule: 
   ## the HR Schema is used (XE) for the following tests
@@ -762,7 +772,6 @@ when isMainModule:
     for i in ctl.low .. ctl.high:
           echo "cname:" & rs.rsColumnNames[i] & " colnumidx: " & $(i+1) & " " & $ctl[i]
    
-      
     for row in resultSetRowIterator(rs):
           # retrieve column values by columnname or index
           # TODO: example with transaction
@@ -799,36 +808,36 @@ when isMainModule:
 
     # refcursor example
     newPreparedStatement(conn,refCursorQuery, pstmt,1)
- 
-    param =  addBindParameter(pstmt,RefCursorColumnTypeParam,
+   
+    withPreparedStatement(pstmt):
+      let rc1 =  addBindParameter(pstmt,RefCursorColumnTypeParam,
                                          BindIdx(1),1)
-    let param2 =  addBindParameter(pstmt,RefCursorColumnTypeParam,
+      let param2 =  addBindParameter(pstmt,RefCursorColumnTypeParam,
                                          BindIdx(2),1)
-    let deptId =  addBindParameter(pstmt,Int64ColumnTypeParam,
+      let deptId =  addBindParameter(pstmt,Int64ColumnTypeParam,
                                          BindIdx(3),1)
-    deptId[0].setInt64(some(80.int64))
+      deptId[0].setInt64(some(80.int64))
 
-    executeStatement(pstmt, rs)
-    var outRs : ResultSet
-    openRefCursor(pstmt,param,outRs,1,DpiModeExec.DEFAULTMODE.ord)
+      executeStatement(pstmt, rs)
                                     
-    echo "refCursor 1 results: "
+      echo "refCursor 1 results: "
+      var refc : ResultSet
     
-    for row in resultSetRowIterator(outRs):
-      echo $fetchString(row[0].data) 
+      pstmt.openRefCursor(rc1,refc,1,DpiModeExec.DEFAULTMODE.ord)
 
-    var outRs2 : ResultSet
-    openRefCursor(pstmt,param2,outRs2,10,DpiModeExec.DEFAULTMODE.ord)
+      withRefCursor(refc):
+        for row in resultSetRowIterator(refc):
+          echo $fetchString(row[0].data) 
                                      
-    echo "refCursor 2 results: filter with department_id = 80 "
+      echo "refCursor 2 results: filter with department_id = 80 "
     
-    for row in resultSetRowIterator(outRs2):
-      echo $fetchString(row[0].data) & " " & $fetchString(row[1].data) 
+      openRefCursor(pstmt,param2,refc,10,DpiModeExec.DEFAULTMODE.ord)
     
-    outRs2.closeRefCursor
-    outRs.closeRefCursor   
-    pstmt.destroy 
-
+      withRefCursor(refc):
+        for row in resultSetRowIterator(refc):
+          echo $fetchString(row[0].data) & " " & $fetchString(row[1].data) 
+    
+  
     discard conn.releaseConnection
     discard destroyOracleContext(octx)
 
