@@ -90,11 +90,11 @@ type
     paramVar: ptr dpiVar
     buffer: ptr dpiData
     rowBufferSize: int
-    isPlSqlArray : bool   
-    # number of buffered rows
-    ## for single parameters always 1 - for columnar parameters > 1 up to
-    ## the given arraySize
-
+    isPlSqlArray : bool
+    isFetched : bool
+    # flag used for refcursor reexecute prevention.
+    # if a refcursor is within the statement it can't be reused
+  
   ParamTypeRef* = ref ParamType
 
   ParamTypeList* = seq[ParamTypeRef]
@@ -128,7 +128,6 @@ type
     boundParams: ParamTypeList  # mixed in/out or inout
     stmtCacheKey*: cstring
     scrollable: bool            # unused
-    executed: bool              # quirky flag used to track the state
     columnCount: uint32         # deprecated
     pStmt: ptr dpiStmt
     statementInfo*: dpiStmtInfo # populated within the execute stage
@@ -301,9 +300,6 @@ template onSuccessExecute(context: ptr dpiContext, toprobe: untyped,
   else:
     body
 
-template isExecuted*(ps: var PreparedStatement): bool =
-  ## true if the statement was executed
-  ps.executed
 
 proc createConnection*(octx: var OracleContext,
                          connectstring: string,
@@ -340,7 +336,7 @@ proc newPreparedStatement*(conn: var OracleConnection,
   outPs.query = query
   outPs.columnCount = 0
   outPs.relatedConn = conn
-  outPs.executed = false 
+
   outPs.stmtCacheKey = stmtCacheKey.cstring
   outPs.boundParams = newSeq[ParamTypeRef](0)
   outPs.rsBufferedRows = bufferedRows
@@ -408,7 +404,8 @@ proc addBindParameter(ps : var PreparedStatement,
                          rowBufferSize: boundRows,
                          # params rowbuffer always inherited 
                          # from statements rowbuffer
-                         isPlSqlArray : isPlSqlArray)
+                         isPlSqlArray : isPlSqlArray,
+                         isFetched : false)
   bindParameter(ps,result)
   ps.boundParams.add(result)
 
@@ -477,11 +474,6 @@ proc destroy*(prepStmt: var PreparedStatement) =
 
   discard dpiStmt_release(prepStmt.pStmt)
 
-proc reset(rs: var ResultSet) =
-  ## resets the resultset ready for re-execution (wind-back)
-  # todo: implement
-  discard
-
 
 proc executeAndInitResultSet(prepStmt : var PreparedStatement,
                          dpiMode: uint32 = DpiModeExec.DEFAULTMODE.ord,
@@ -516,6 +508,7 @@ proc executeAndInitResultSet(prepStmt : var PreparedStatement,
   if result == DpiResult.SUCCESS:
     if prepStmt.rsOutputCols.len <= 0:
       # create the needed buffercolumns(resultset) automatically
+      # only once
       prepStmt.rsOutputCols = newParamTypeList(prepStmt.columnCount.int)
       prepStmt.rsColumnNames = newSeq[string](prepStmt.columnCount.int)
       discard dpiStmt_getInfo(prepStmt.pStmt, prepStmt.statementInfo.addr)
@@ -551,9 +544,15 @@ proc openRefCursor*(ps: PreparedStatement,param : ParamTypeRef,
   ## opens the refcursor on the specified bind parameter. executeStatement must be called
   ## before open it.
   ## throws IOError in case of an error
+ 
+  if param.isFetched:
+    raise newException(IOError, "openRefCursor: " & 
+      """ reexecute of the preparedStatement with refCursor not supported """ ) 
+    {.effects.} 
 
   if param.columnType.nativeType == DpiNativeCType.STMT and 
-    param.columnType.dbType == DpiOracleType.OTSTMT:         
+    param.columnType.dbType == DpiOracleType.OTSTMT:
+    param.isFetched = true         
     outRs.pstmt = param[0].fetchRefCursor
     outRs.relatedConn = ps.relatedConn
     outRs.rsBufferedRows = bufferedRows
@@ -564,12 +563,15 @@ proc openRefCursor*(ps: PreparedStatement,param : ParamTypeRef,
     {.effects.}           
   else:
     raise newException(IOError, "openRefCursor: " & 
-      "bound parameter has not the required dbType/nativeType combination " )
+      """ bound parameter has not the required
+          DpiNativeCType.STMT/DpiOracleType.OTSTMT 
+          combination """ ) 
     {.effects.}         
 
-proc closeRefCursor*(prepStmt : var ResultSet) =
+proc closeRefCursor*(rs : var ResultSet) =
   ## closes the refCursor without affecting the parent (inherited) PreparedStatement   
-  discard
+  for i in rs.rsOutputCols.low .. rs.rsOutputCols.high:
+    discard dpiVar_release(rs.rsOutputCols[i].paramVar)
 
 
 proc executeStatement*(prepStmt: var PreparedStatement,
@@ -612,12 +614,11 @@ proc executeStatement*(prepStmt: var PreparedStatement,
           {.effects.}
   
 
-  if not prepStmt.isExecuted:
-    if DpiResult(prepStmt.executeAndInitResultSet(dpiMode,false)) ==
+  if DpiResult(prepStmt.executeAndInitResultSet(dpiMode,false)) ==
       DpiResult.FAILURE:
-      raise newException(IOError, "executeStatement/initResultSet: " & 
+    raise newException(IOError, "executeStatement/initResultSet: " & 
                          getErrstr(prepStmt.relatedConn.context) )
-      {.effects.}
+    {.effects.}
 
   outRs = cast[ResultSet](prepStmt)
 
@@ -662,6 +663,7 @@ iterator resultSetRowIterator*(rs: var ResultSet): DpiRow =
   var p: DpiRow = newSeq[DpiRowElement](rs.rsOutputCols.len)
   var paramtypes = rs.getColumnTypeList
   rs.rsCurrRow = 0
+  rs.rsRowsFetched = 0
 
   if rs.rsRowsFetched == 0:
     if fetchNextRows(rs) != DpiResult.SUCCESS:
@@ -773,12 +775,9 @@ when isMainModule:
                  " " & $fetchInt64(row[11].data)
 
     echo "query1 executed - param department_id = 80 "
-    # rerun preparedStatement with different parameter value    
+    # rerun preparedStatement with a different parameter value    
     param[0].setInt64(some(10.int64))
     executeStatement(pstmt, rs)
-    # FIXME: reducing fetcharraysize leads to results from previous run
-    # FIXME: set fetchArraySize at newPreparedStatement
-    # FIXME: change name of input parameter array buffer
 
     for row in resultSetRowIterator(rs):
       # retrieve column values by columnname or index
@@ -825,7 +824,9 @@ when isMainModule:
     
     for row in resultSetRowIterator(outRs2):
       echo $fetchString(row[0].data) & " " & $fetchString(row[1].data) 
-                                 
+    
+    outRs2.closeRefCursor
+    outRs.closeRefCursor   
     pstmt.destroy 
 
     discard conn.releaseConnection
