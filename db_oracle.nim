@@ -763,6 +763,7 @@ when isMainModule:
 
     var refCursorQuery: SqlQuery = newSqlQuery(""" begin 
             open :1 for select 'teststr' StrVal from dual union all select 'teststr1' from dual; 
+            open :2 for select first_name,last_name from hr.employees;
             end; """ )
 
     # refcursor example
@@ -770,16 +771,27 @@ when isMainModule:
  
     param =  addBindParameter(pstmt,RefCursorColumnTypeParam,
                                          BindIdx(1),1)
+    let param2 =  addBindParameter(pstmt,RefCursorColumnTypeParam,
+                                         BindIdx(2),1)
     executeStatement(pstmt, rs, 1)
     var outRs : ResultSet
     openRefCursor(conn,param,outRs,
                                      DpiModeExec.DEFAULTMODE.ord,
-                                     5 )
-    echo "refCursor results: "
+                                     1 )
+    echo "refCursor 1 results: "
     
     for row in resultSetRowIterator(outRs):
       echo $fetchString(row[0].data) 
-        
+
+    var outRs2 : ResultSet
+    openRefCursor(conn,param2,outRs2,
+                                     DpiModeExec.DEFAULTMODE.ord,
+                                     5 )
+    echo "refCursor 2 results: "
+    
+    for row in resultSetRowIterator(outRs2):
+      echo $fetchString(row[0].data) & " " & $fetchString(row[1].data) 
+                                 
     pstmt.destroy 
 
     discard conn.releaseConnection
