@@ -113,7 +113,7 @@ const
   Int64ColumnTypeParam* =  (DpiNativeCType.INT64,
                                 DpiOracleType.OTNUMBER,
                                 1,false,1)
-  # use dpiStmt_executeMany for bulk binds
+  # TODO: use dpiStmt_executeMany for bulk binds
 type
   SqlQuery* = object
     ## fixme: use sqlquery from db_common
@@ -757,13 +757,28 @@ when isMainModule:
                  " " & $fetchString(row["LAST_NAME"].data) &
                  " " & $fetchInt64(row[10].data) &
                  " " & $fetchInt64(row[11].data)
-        
+
+    echo "query1 executed - param department_id = 80 "
+    # rerun preparedStatement with different parameter value    
+    param[0].setInt64(some(10.int64))
+    executeStatement(pstmt, rs, 10)
+
+    for row in resultSetRowIterator(rs):
+      # retrieve column values by columnname or index
+      echo $fetchRowId(row[0].data) &
+         " " & $fetchDouble(row[1].data) & 
+             " " & $fetchString(row["FIRST_NAME"].data) &
+             " " & $fetchString(row["LAST_NAME"].data) &
+             " " & $fetchInt64(row[10].data) &
+             " " & $fetchInt64(row[11].data)
+    echo "query1 executed 2nd run - param department_id = 10 " 
+
     pstmt.destroy
         # TODO: plsql example with types and select * from table()
 
     var refCursorQuery: SqlQuery = newSqlQuery(""" begin 
             open :1 for select 'teststr' StrVal from dual union all select 'teststr1' from dual; 
-            open :2 for select first_name,last_name from hr.employees;
+            open :2 for select first_name,last_name from hr.employees where department_id = :3;
             end; """ )
 
     # refcursor example
@@ -773,6 +788,10 @@ when isMainModule:
                                          BindIdx(1),1)
     let param2 =  addBindParameter(pstmt,RefCursorColumnTypeParam,
                                          BindIdx(2),1)
+    let deptId =  addBindParameter(pstmt,Int64ColumnTypeParam,
+                                         BindIdx(3),1)
+    deptId[0].setInt64(some(10.int64))
+
     executeStatement(pstmt, rs, 1)
     var outRs : ResultSet
     openRefCursor(conn,param,outRs,
@@ -787,7 +806,7 @@ when isMainModule:
     openRefCursor(conn,param2,outRs2,
                                      DpiModeExec.DEFAULTMODE.ord,
                                      5 )
-    echo "refCursor 2 results: "
+    echo "refCursor 2 results: filter with department_id = 10 "
     
     for row in resultSetRowIterator(outRs2):
       echo $fetchString(row[0].data) & " " & $fetchString(row[1].data) 
