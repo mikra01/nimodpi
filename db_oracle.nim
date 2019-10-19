@@ -1,7 +1,6 @@
 import os
 import times
 import options
-import encodings
 import nimodpi
 
 # Copyright (c) 2019 Michael Krauter
