@@ -116,15 +116,15 @@ const
                                 1,false,1)
   # TODO: use dpiStmt_executeMany for bulk binds
 type
-  SqlQuery* = object
+  SqlQuery* = distinct cstring
     ## fixme: use sqlquery from db_common
-    rawSql: cstring
+  PlSql* = distinct cstring
 
   PreparedStatement* = object
     relatedConn: OracleConnection
     # tracks parent ps (refcursor handling). this is the 
     # PreparedStatement which owns the refcursor variable(s) 
-    query*: SqlQuery
+    query*: cstring
     boundParams: ParamTypeList  # mixed in/out or inout
     stmtCacheKey*: cstring
     scrollable: bool            # unused
@@ -251,9 +251,9 @@ template isSuccess*(result: DpiResult): bool =
 template isFailure*(result: DpiResult): bool =
   result == DpiResult.FAILURE
   
-proc newSqlQuery*(sql: string): SqlQuery =
+template osql*(sql: string): SqlQuery =
   ## template to construct a SqlQuery type
-  SqlQuery(rawSql: sql.cstring)
+  SqlQuery(sql.cstring)
 
 proc newOracleContext*(encoding: NlsLang, authMode: DpiAuthMode,
                        outCtx: var OracleContext,
@@ -324,7 +324,7 @@ proc newPreparedStatement*(conn: var OracleConnection,
   ## the statement cache key is optional.
   ## throws IOException in an error case
   outPs.scrollable = false # always false due to not implemented
-  outPs.query = query
+  outPs.query = cast[cstring](query)
   outPs.columnCount = 0
   outPs.relatedConn = conn
 
@@ -332,9 +332,9 @@ proc newPreparedStatement*(conn: var OracleConnection,
   outPs.boundParams = newSeq[ParamTypeRef](0)
   outPs.rsBufferedRows = bufferedRows
 
-  if DpiResult(dpiConn_prepareStmt(conn.connection, 0.cint, query.rawSql,
-      query.rawSql.len.uint32, outPs.stmtCacheKey,
-      outPs.stmtCacheKey.len.uint32, outPs.pStmt.addr)) == DpiResult.FAILURE:
+  if DpiResult(dpiConn_prepareStmt(conn.connection, 0.cint,outPs.query,
+      outPs.query.len.uint32, outPs.stmtCacheKey,
+      outPs.stmtCacheKey.len.uint32, outPs.pStmt.addr)).isFailure:
     raise newException(IOError, "newPreparedStatement: " & 
       getErrstr(conn.context) )
     {.effects.}           
@@ -342,11 +342,18 @@ proc newPreparedStatement*(conn: var OracleConnection,
   if DpiResult(dpiStmt_setFetchArraySize(
                                          outPs.pStmt, 
                                          bufferedRows.uint32)
-              ) == DpiResult.FAILURE:
+              ).isFailure:
     raise newException(IOError, "newPreparedStatement: " & 
       getErrstr(conn.context) )
     {.effects.}           
 
+template newPreparedStatement*(conn: var OracleConnection, 
+    query: var SqlQuery,
+    outPs: var PreparedStatement,
+    stmtCacheKey: string = "" ) =
+  ## convenience template to construct a preparedStatement
+  ## for ddl    
+  newPreparedStatement(conn,query,outPs,1,stmtCacheKey)
 
 template bindParameter(ps: var PreparedStatement, param: ParamTypeRef) =
   # internal template to create a new in/out/inout binding variable
@@ -393,8 +400,6 @@ proc addBindParameter(ps : var PreparedStatement,
                          paramVar: nil,
                          buffer: nil,
                          rowBufferSize: boundRows,
-                         # params rowbuffer always inherited 
-                         # from statements rowbuffer
                          isPlSqlArray : isPlSqlArray,
                          isFetched : false)
   bindParameter(ps,result)
@@ -502,17 +507,19 @@ proc executeAndInitResultSet(prepStmt : var PreparedStatement,
       prepStmt.rsOutputCols = newParamTypeList(prepStmt.columnCount.int)
       prepStmt.rsColumnNames = newSeq[string](prepStmt.columnCount.int)
       discard dpiStmt_getInfo(prepStmt.pStmt, prepStmt.statementInfo.addr)
+
+      # if not prepStmt.statementInfo.isDDL == 1.cint:
       var qInfo: dpiQueryInfo
       for i in countup(1, prepStmt.columnCount.int):
-        # extract needed params out of the metadata
-        # the columnindex starts with 1
-        # TODO: if a type is not supported by ODPI-C log error within the ParamType
-        discard dpiStmt_getQueryInfo(prepStmt.pStmt, i.uint32, qInfo.addr)
-        var colname = newString(qInfo.nameLength)
-        copyMem(addr(colname[0]), qInfo.name.ptr, colname.len)
+          # extract needed params out of the metadata
+          # the columnindex starts with 1
+          # TODO: if a type is not supported by ODPI-C log error within the ParamType
+          discard dpiStmt_getQueryInfo(prepStmt.pStmt, i.uint32, qInfo.addr)
+          var colname = newString(qInfo.nameLength)
+          copyMem(addr(colname[0]), qInfo.name.ptr, colname.len)
 
-        prepStmt.rsColumnNames[i-1] = colname
-        prepStmt.rsOutputCols[i-1] = ParamTypeRef(
+          prepStmt.rsColumnNames[i-1] = colname
+          prepStmt.rsOutputCols[i-1] = ParamTypeRef(
                             bindPosition: BindInfo(kind: BindInfoType.byPosition,
                                                  paramVal: BindIdx(i)),
                             queryInfo: qInfo,
@@ -525,7 +532,7 @@ proc executeAndInitResultSet(prepStmt : var PreparedStatement,
                             paramVar: nil,
                             buffer: nil,
                             rowBufferSize: prepStmt.rsBufferedRows)
-        addOutColumn(prepStmt,prepStmt.rsOutputCols[i-1])
+          addOutColumn(prepStmt,prepStmt.rsOutputCols[i-1])
 
 
 proc openRefCursor*(ps: PreparedStatement,param : ParamTypeRef,
@@ -608,13 +615,13 @@ proc executeStatement*(prepStmt: var PreparedStatement,
           {.effects.}
   
 
-  if DpiResult(prepStmt.executeAndInitResultSet(dpiMode,false)) ==
-      DpiResult.FAILURE:
+  if DpiResult(prepStmt.executeAndInitResultSet(dpiMode,false)).isFailure:
     raise newException(IOError, "executeStatement/initResultSet: " & 
                          getErrstr(prepStmt.relatedConn.context) )
     {.effects.}
 
   outRs = cast[ResultSet](prepStmt)
+
 
 proc fetchNextRows*(rs: var ResultSet): DpiResult =
   ## fetches next rows (if present) into the internal buffer.
@@ -708,7 +715,17 @@ template withPreparedStatement*( ps : var PreparedStatement, body : untyped ) =
     body
   finally:
     ps.destroy
-  
+
+template executeDDL*(conn : var OracleConnection, 
+                     sql : SqlQuery,
+                     dpiMode: uint32 = DpiModeExec.DEFAULTMODE.ord) =
+  ## convenience template to execute a ddl statement (no results returned)                   
+  var rs : ResultSet
+  var pstmt : PreparedStatement
+  newPreparedStatement(conn,sql,pstmt)
+  withPreparedStatement(pstmt):
+    pstmt.executeStatement(rs,dpiMode)
+
 
 when isMainModule: 
   ## the HR Schema is used (XE) for the following tests
@@ -733,14 +750,14 @@ when isMainModule:
 
     createConnection(octx, connectionstr, oracleuser, pw, conn)
 
-    var query: SqlQuery = newSqlQuery("""select 100 as col1, 'äöü' as col2 from dual 
+    var query: SqlQuery = osql"""select 100 as col1, 'äöü' as col2 from dual 
           union all  
           select 200 , 'äöü2' from dual
           union all
           select 300 , 'äöü3' from dual
-          """)
+          """
 
-    var query2: SqlQuery = newSqlQuery(""" select 
+    var query2: SqlQuery = osql""" select 
                   rowid,
                   EMPLOYEE_ID, 
                   FIRST_NAME, 
@@ -753,7 +770,7 @@ when isMainModule:
                   COMMISSION_PCT, 
                   MANAGER_ID, 
                   DEPARTMENT_ID 
-       from hr.employees where department_id = :param1  """ )
+       from hr.employees where department_id = :param1  """ 
 
     
     var pstmt: PreparedStatement
@@ -801,11 +818,11 @@ when isMainModule:
     pstmt.destroy
         # TODO: plsql example with types and select * from table()
 
-    var refCursorQuery: SqlQuery = newSqlQuery(""" begin 
+    var refCursorQuery: SqlQuery = osql""" begin 
             open :1 for select 'teststr' StrVal from dual union all select 'teststr1' from dual; 
             open :2 for select first_name,last_name from hr.employees where department_id = :3;
-            end; """ )
-
+            end; """
+    # FIXME: type plsql blocks 
     # refcursor example
     newPreparedStatement(conn,refCursorQuery, pstmt,1)
    
@@ -837,7 +854,20 @@ when isMainModule:
         for row in resultSetRowIterator(refc):
           echo $fetchString(row[0].data) & " " & $fetchString(row[1].data) 
     
-  
+      var ctableq = osql""" CREATE TABLE HR.TESTTABLE(
+                                C1 VARCHAR2(20) NOT NULL 
+                              , C2 NUMBER 
+                              , CONSTRAINT TESTTABLE_PK PRIMARY KEY(C1)
+            ENABLE 
+          ) """
+
+      var ctableDrop = osql""" DROP TABLE HR.TESTTABLE """  
+      try:
+        conn.executeDDL(ctableq)
+      except:
+        conn.executeDDL(ctableDrop)
+ 
+ 
     discard conn.releaseConnection
     discard destroyOracleContext(octx)
 

@@ -12,7 +12,7 @@ proc hex2Str*(par: var openArray[byte]): string =
 
 # toString procs
 proc `$`*(p : var SqlQuery) : string = 
-  $p.rawSql
+  $p
 
 proc `$`*(p: var dpiStmtInfo): string =
   ## string repr of a statementInfo obj
