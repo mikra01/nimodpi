@@ -11,7 +11,7 @@ template setBoolean*(param : ptr dpiData, value : Option[bool] ) =
        param.setDbNull
     else: 
        param.setNotDbNull  
-       param.asBoolean.value = value.some  
+       param.value.asBoolean = value.get 
     
 # simple type conversion templates.
 template fetchFloat*(val : ptr dpiData) : Option[float32] =
@@ -21,13 +21,14 @@ template fetchFloat*(val : ptr dpiData) : Option[float32] =
     else:
       some(val.value.asFloat.float32)
   
-template setFloat*( param : ptr dpiData, value : Option[float32]) =
+proc setFloat*( param : ptr dpiData, value : Option[float32]) =
     ## bind parameter setter float32 type. 
+    ## TODO: eval why template is not compiling
     if value.isNone: 
       param.setDbNull
     else:
       param.setNotDbNull  
-      param.asFloat.value = value.some
+      param.value.asFloat = value.get
   
 template fetchDouble*(val : ptr dpiData) : Option[float64] =
     ## fetches the specified value as double (Nims 64 bit type). the value is copied 
@@ -36,13 +37,14 @@ template fetchDouble*(val : ptr dpiData) : Option[float64] =
     else:
       some(val.value.asDouble.float64)
   
-template setDouble*(param : ptr dpiData, value : Option[float64]) =
+proc setDouble*(param : ptr dpiData, value : Option[float64]) =
     ## bind parameter setter float64 type. 
+    ## TODO: eval why template is not compiling
     if value.isNone:
       param.setDbNull
     else:  
       param.setNotDbNull
-      param.asDouble = value.some   
+      param.value.asDouble = value.get   
     
 template fetchUInt64*(val : ptr dpiData) : Option[uint64] =
     ## fetches the specified value as double (Nims 64 bit type). the value is copied 
@@ -57,7 +59,7 @@ template setUInt64*(param : ptr dpiData, value : Option[uint64]) =
       param.setDbNull
     else:
       param.setNotDbNull  
-      param.asUint64 = value.some    
+      param.value.asUint64 = value.get
         
 template fetchInt64*(val : ptr dpiData) : Option[int64] =
     ## fetches the specified value as double (Nims 64 bit type). the value is copied 
@@ -88,11 +90,11 @@ template setIntervalDS*(param : ptr dpiData , value : Option[Duration]) =
       param.setDbNull
     else:  
       param.setNotDbNull
-      param.value.asIntervalDS.fseconds = value.some.nanoseconds    
-      param.value.asIntervalDS.seconds = value.some.seconds 
-      param.value.asIntervalDS.minutes = value.some.minutes
-      param.value.asIntervalDS.hours = value.some.hours
-      param.value.asIntervalDS.days = value.some.days
+      param.value.asIntervalDS.fseconds = value.get.nanoseconds    
+      param.value.asIntervalDS.seconds = value.get.seconds 
+      param.value.asIntervalDS.minutes = value.get.minutes
+      param.value.asIntervalDS.hours = value.get.hours
+      param.value.asIntervalDS.days = value.get.days
     
 template fetchDateTime*( val : ptr dpiData ) : Option[DateTime] =
     ## fetches the specified value as DateTime. the value is copied 
@@ -101,26 +103,27 @@ template fetchDateTime*( val : ptr dpiData ) : Option[DateTime] =
     else:
       some(toDateTime(val))
   
-template setDateTime*(param : ptr dpiData , value : Option[DateTime] ) = 
+proc setDateTime*(param : ptr dpiData , value : Option[DateTime] ) = 
     ## bind parameter setter DateTime type. this setter operates always with index 1
     if value.isNone:
       param.setDbNull
     else:
       param.setNotDbNull  
-      let dt = cast[DateTime](some)
+      let dt = value.get
       let utcoffset = dt.utcOffset
-      param.value.asTimestamp.year = dt.year
-      param.value.asTimestamp.month = dt.month     
-      param.value.asTimestamp.day = dt.day
-      param.value.asTimestamp.hour = dt.hour
-      param.value.asTimestamp.minute = dt.minute
-      param.value.asTimestamp.second =  dt.second
-      param.value.asTimestamp.fsecond = dt.nanosecond
+      let tz = dt.timezone
+      param.value.asTimestamp.year = dt.year.int16
+      param.value.asTimestamp.month = dt.month.uint8     
+      param.value.asTimestamp.day = dt.monthday.uint8
+      param.value.asTimestamp.hour = dt.hour.uint8
+      param.value.asTimestamp.minute = dt.minute.uint8
+      param.value.asTimestamp.second =  dt.second.uint8
+      param.value.asTimestamp.fsecond = dt.nanosecond.uint32
       
       if not tz.isNil:
-        let tzhour : uint8 =  cast[uint8](utcoffset/3600) # get hours and throw fraction away
-        param.buffer.value.asTimestamp.tzHourOffset = tzhour
-        param.buffer.value.asTimestamp.tzMinuteOffset = cast[uint8]((utcoffset - tzhour*3600)/60)
+        let tzhour : int8 =  cast[int8](utcoffset/3600) # get hours and throw fraction away
+        param.value.asTimestamp.tzHourOffset = tzhour
+        param.value.asTimestamp.tzMinuteOffset = cast[int8]((utcoffset - tzhour*3600)/60)
         # TODO: eval if ok 
     
 template fetchString*( val : ptr dpiData ) : Option[string] =

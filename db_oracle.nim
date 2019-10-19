@@ -917,6 +917,9 @@ when isMainModule:
                                 C1 VARCHAR2(20) NOT NULL 
                               , C2 NUMBER(5,0)
                               , C3 raw(20) 
+                              , C4 NUMBER(5,3)
+                              , C5 NUMBER(15,5)
+                              , C6 TIMESTAMP
                               , CONSTRAINT DEMOTESTTABLE_PK PRIMARY KEY(C1)
             ENABLE 
           ) """
@@ -928,7 +931,8 @@ when isMainModule:
       #  conn.executeDDL(ctableDrop)
 
     var insertStmt: SqlQuery =
-      osql" insert into HR.DEMOTESTTABLE(C1,C2,C3) values (:1,:2,:3) "
+      osql""" insert into HR.DEMOTESTTABLE(C1,C2,C3,C4,C5,C6) 
+                                        values (:1,:2,:3,:4,:5,:6) """
 
     conn.newPreparedStatement(insertStmt, pstmt, 10)
 
@@ -938,6 +942,19 @@ when isMainModule:
                                           BindIdx(2), 10)
     let c3param = pstmt.addBindParameter(newRawColTypeParam(5),
                      3.BindIdx,10)
+    let c4param = pstmt.addBindParameter((DpiNativeCType.FLOAT,
+                                          DpiOracleType.OTNATIVE_FLOAT,
+                                          1,false,0),
+                     4.BindIdx,10)                  
+    let c5param = pstmt.addBindParameter((DpiNativeCType.DOUBLE,
+                                          DpiOracleType.OTNUMBER,
+                                          1,false,0),
+                      5.BindIdx,10)                  
+    let c6param = pstmt.addBindParameter((DpiNativeCType.TIMESTAMP,
+                                          DpiOracleType.OTTIMESTAMP_TZ,
+                                          1,false,0),
+                       6.BindIdx,10)                  
+ 
     # TODO: cleanup setter API
 
     var rset: ResultSet
@@ -955,20 +972,26 @@ when isMainModule:
           c1param.setString(paramidx,some("test_äüö" & $i)) #pk
           c2param[paramidx].setInt64(varc2)
           c3param.setBytes(paramidx,some(@[(0xAA+i).byte,0xBB,0xCC]))
+          setFloat(c4param[paramidx],some(i.float32+0.123.float32))
+          c5param[paramidx].setDouble(some(i.float64+99.12345))
+          let dt = getTime().local
+          c6param[paramidx].setDateTime(some(dt))
           if paramidx == 9: # 10 buffered rows
             pstmt.executeStatement(rset)
             paramidx = 0
           else:
             inc paramidx
 
-    var selectStmt: SqlQuery = osql"select c1,c2,rawtohex(c3) from hr.demotesttable"
+    var selectStmt: SqlQuery = osql"select c1,c2,rawtohex(c3) as c3,c4,c5,c6 from hr.demotesttable"
     conn.newPreparedStatement(selectStmt, pstmt, 20)
 
     withPreparedStatement(pstmt):
       pstmt.executeStatement(rset)
       for row in resultSetRowIterator(rset):
         echo $fetchString(row[0].data) & "  " & $fetchInt64(row[1].data) & 
-          " " & $fetchString(row[2].data)
+          " " & $fetchString(row[2].data) & " " & $fetchDouble(row[3].data) &
+          " " & $fetchDouble(row[4].data) & " " & $(fetchDateTime(row[5].data).get)
+          # FIXME: fetchFloat returns wrong values
 
     # drop the table
     var dropStmt: SqlQuery = osql"drop table hr.demotesttable"
