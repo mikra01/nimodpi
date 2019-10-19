@@ -1,6 +1,5 @@
 import os
 import times
-import typeinfo
 import options
 import nimodpi
 

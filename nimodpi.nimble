@@ -13,4 +13,6 @@ requires "nimterop >= 0.1.0"
 task demo, "running demo":
   exec "nim odpic_demo"
 
+task db_oracle, "running db_oracle examples ":
+  exec "nim oracle_demo"
 
