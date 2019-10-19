@@ -767,7 +767,7 @@ when isMainModule:
                             ))""" 
 
   var octx: OracleContext
-  var errmsg: string
+  var errmsg: string 
 
   if isSuccess(newOracleContext(lang, DpiAuthMode.SYSDBA, octx, errmsg)):
 
@@ -851,20 +851,21 @@ when isMainModule:
                          from hr.employees 
                           where department_id = :3;
             end; """
-    # FIXME: type plsql blocks 
+    # FIXME: typed plsql blocks 
+
     # refcursor example
     newPreparedStatement(conn,refCursorQuery, pstmt,1)
    
     withPreparedStatement(pstmt):
-      let rc1 =  addBindParameter(pstmt,RefCursorColumnTypeParam,
+      let rc1 =  pstmt.addBindParameter(RefCursorColumnTypeParam,
                                          BindIdx(1),1)
-      let param2 =  addBindParameter(pstmt,RefCursorColumnTypeParam,
+      let param2 =  pstmt.addBindParameter(RefCursorColumnTypeParam,
                                          BindIdx(2),1)
-      let deptId =  addBindParameter(pstmt,Int64ColumnTypeParam,
+      let deptId =  pstmt.addBindParameter(Int64ColumnTypeParam,
                                          BindIdx(3),1)
       deptId[0].setInt64(some(80.int64))
 
-      executeStatement(pstmt, rs)
+      pstmt.executeStatement(rs)
                                     
       echo "refCursor 1 results: "
       var refc : ResultSet
@@ -877,7 +878,7 @@ when isMainModule:
                                      
       echo "refCursor 2 results: filter with department_id = 80 "
     
-      openRefCursor(pstmt,param2,refc,10,DpiModeExec.DEFAULTMODE.ord)
+      pstmt.openRefCursor(param2,refc,10,DpiModeExec.DEFAULTMODE.ord)
     
       withRefCursor(refc):
         for row in resultSetRowIterator(refc):
@@ -901,11 +902,10 @@ when isMainModule:
 
     conn.newPreparedStatement(insertStmt,pstmt,10)
 
-    let c1param =  addBindParameter(pstmt,newStringColTypeParam(20),
+    let c1param =  pstmt.addBindParameter(newStringColTypeParam(20),
                      BindIdx(1),10)
-    let c2param =  addBindParameter(pstmt,
-                                      Int64ColumnTypeParam,
-                                      BindIdx(2),10)
+    let c2param =  pstmt.addBindParameter(Int64ColumnTypeParam,
+                                          BindIdx(2),10)
     for i in countup(0,9):
       c1param.setString(i,some("test_äüö" & $i))
       c2param[i].setInt64(some(i.int64))
@@ -913,17 +913,17 @@ when isMainModule:
 
     var rset : ResultSet
     var result : DpiResult
-    
+
     conn.withTransaction(result):
       withPreparedStatement(pstmt):
         echo "bulkinsert"
-        executeStatement(pstmt,rset)
+        pstmt.executeStatement(rset)
 
     var selectStmt : SqlQuery = osql"select c1,c2 from hr.demotesttable"  
     conn.newPreparedStatement(selectStmt,pstmt,20)
 
     withPreparedStatement(pstmt):
-      executeStatement(pstmt,rset)
+      pstmt.executeStatement(rset)
       for row in resultSetRowIterator(rset):
         echo $fetchString(row[0].data) & "  " & $fetchInt64(row[1].data) 
 
