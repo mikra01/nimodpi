@@ -746,10 +746,16 @@ iterator bulkBindIterator*(pstmt: var PreparedStatement,
   ## index of the rowBuffer. maxRowBufferIdx is the high watermark.
   ## if it is reached executeStatement is called automatically
   ## and the internal counter is reset to 0.
+  if maxRows < maxRowBufferIdx:
+    raise newException(IOError,"bulkBindIterator: " &
+      "constraint maxRows < maxRowBufferIdx violated " )
+    {.effects.}  
   var rowBufferIdx = 0.int
   for i in countup(0,maxRows):
     yield (rowcounter:i,buffercounter:rowBufferIdx)
-    if rowBufferIdx == maxRowBufferIdx: # 10 buffered rows
+    if rowBufferIdx == maxRowBufferIdx:
+      # if high watermark reached flush the buffer
+      # and reset the buffer counter
       pstmt.executeStatement(rs)
       rowBufferIdx = 0
     else:
