@@ -137,10 +137,11 @@ template setString*(param : ParamTypeRef , rownum : int, value : Option[string] 
       param.buffer.setDbNull
     else: 
       param.buffer.setNotDbNull 
+      let str : cstring  = $value.get
       discard dpiVar_setFromBytes(param.paramVar,
                                   rownum.uint32,
-                                  addr(value.some[0]),
-                                  value.some.len)    
+                                  str,
+                                  str.len.uint32)    
     
 template fetchBytes*( val : ptr dpiData ) : Option[seq[byte]] =
     ## fetches the specified value as seq[byte]. the byte array is copied

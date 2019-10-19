@@ -73,7 +73,7 @@ type
     buffer: ptr dpiData
     dpiresult: DpiResult      # contains errorcode and msg
 
-type
+type 
   PreparedStatement = object
     nativeStatement: ptr dpiStmt
     statementInfo: dpiStmtInfo
@@ -374,6 +374,23 @@ onSuccessExecute(context, dpiConn_create(context,oracleuser,oracleuser.len,
 
     var refCursorCol: ColumnBuffer
 
+    var statementInfo: dpiStmtInfo
+    if dpiStmt_getInfo(prepStatement, statementInfo.addr) ==
+        DpiResult.SUCCESS.ord:
+      echo $statementInfo
+    var colcount: uint32
+    discard dpiStmt_getNumQueryColumns(prepStatement, colcount.addr)
+    var colinfo: dpiQueryInfo
+    
+    #introspect resultset
+    for i in countup(1, colcount.int):
+      if dpiStmt_getQueryInfo(prepStatement, i.uint32,
+          colinfo.addr) < DpiResult.SUCCESS.ord:
+        echo "error_introspect_column " & $i
+      else:
+        echo $DpiOracleType(colinfo.typeinfo.oracleTypeNum) &
+          " clientsize: " & $colinfo.typeinfo.clientSizeInBytes.uint32
+
     newVar(conn, DpiOracleType.OTSTMT, DpiNativeCType.STMT, 1, 0,
         refCursorCol.addr)
     if hasError(refCursorCol):
@@ -413,6 +430,22 @@ onSuccessExecute(context, dpiConn_create(context,oracleuser,oracleuser.len,
 
       prepStatement = refCursorCol.buffer.value.asStmt # fetch ref_cursor
 
+      if dpiStmt_getInfo(prepStatement, statementInfo.addr) ==
+          DpiResult.SUCCESS.ord:
+        echo $statementInfo
+      
+      discard dpiStmt_getNumQueryColumns(prepStatement, colcount.addr)
+      echo "refcursor_columns: " & $colcount
+      #introspect refcursor
+      for i in countup(1, colcount.int):
+        if dpiStmt_getQueryInfo(prepStatement, i.uint32,
+                  colinfo.addr) < DpiResult.SUCCESS.ord:
+          echo "error_introspect_column " & $i
+        else:
+          echo $DpiOracleType(colinfo.typeinfo.oracleTypeNum) &
+            " clientsize: " & $colinfo.typeinfo.clientSizeInBytes.uint32
+      
+
       # fetch cursor content
       var bufferRowIndex: uint32
       var found: cint
@@ -428,6 +461,7 @@ onSuccessExecute(context, dpiConn_create(context,oracleuser,oracleuser.len,
           onSuccessExecute(context,
                             dpiStmt_getQueryValue(prepStatement, 1,
                                 nativeTypeNum.addr, stringColVal.addr)):
+            echo $nativeTypeNum
             if stringColVal.isNull == 0:
               echo "encoding: " & $stringColVal.value.asBytes.encoding
               echo "ref_cursor_val: " & toNimString(stringColVal)

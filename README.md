@@ -19,6 +19,7 @@ The subdir /demo also contains an example how sqlplus could be utilised for scri
 
 ### Remarks
 I tested it only for the IA64 architecture.
+The API could be subject of change.
 
 ### Oracle XE installation
 For testing just install a local copy of the oracle xe:
@@ -26,8 +27,8 @@ https://www.oracle.com/database/technologies/appdev/xe.html
 
 The oracle instant client is already included.
 
-I tested it only for the windows 10 OS - if you face problems while installing
-the installer logs everything under the program files directory within the subdirectory
+I tested it only for the windows 10 OS - if you face problems while installing xe onto
+your machine the installer logs everything under the program files directory within the subdirectory
 /Oracle/Inventory/logs. Before installing make sure a third party virus scanner is disabled.
 (I faced no problems with the windows defender).
 
@@ -50,11 +51,13 @@ This user is locked by default so the examples will only work if you use
 sysdba for the connecting user.
 
 ### demo
-before running, adjust  "/demo/democredentials.nim" (login and connection_string) 
+before running the demo, adjust  "/demo/democredentials.nim" (login and connection_string) 
 for the database you like to connect to. No ddl is executed. 
 
 run the raw ODPI-C demo with "nimble demo".
+
 run the nim demo with "nimble db_oracle".
+this demo executes some DDL and performs a cleanup.
 
 ### Todo
 direct bindings almost completed except SODA; 

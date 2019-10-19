@@ -913,6 +913,7 @@ when isMainModule:
 
     var rset : ResultSet
     var result : DpiResult
+    
     conn.withTransaction(result):
       withPreparedStatement(pstmt):
         echo "bulkinsert"
