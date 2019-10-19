@@ -950,7 +950,7 @@ when isMainModule:
         for i in countup(0,19):
           c1param.setString(paramidx, some("test_äüö" & $i))
           c2param[paramidx].setInt64(some(i.int64))
-          c3param.setBytes(paramidx,some(@[0xAA.byte,0xBB,0xCC]))
+          c3param.setBytes(paramidx,some(@[(0xAA+i).byte,0xBB,0xCC]))
           if paramidx == 9: # 10 buffered rows
             pstmt.executeStatement(rset)
             paramidx = 0
