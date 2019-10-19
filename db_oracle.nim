@@ -947,9 +947,14 @@ when isMainModule:
     conn.withTransaction(result):
       withPreparedStatement(pstmt):
         var paramidx : int = 0
+        var varc2 : Option[int64]
         for i in countup(0,19):
-          c1param.setString(paramidx, some("test_äüö" & $i))
-          c2param[paramidx].setInt64(some(i.int64))
+          if i == 9:
+            varc2 = none(int64) # simulate dbNull
+          else:
+            varc2 = some(i.int64)
+          c1param.setString(paramidx,some("test_äüö" & $i)) #pk
+          c2param[paramidx].setInt64(varc2)
           c3param.setBytes(paramidx,some(@[(0xAA+i).byte,0xBB,0xCC]))
           if paramidx == 9: # 10 buffered rows
             pstmt.executeStatement(rset)
