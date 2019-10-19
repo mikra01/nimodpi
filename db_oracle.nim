@@ -316,7 +316,8 @@ proc createConnection*(octx: var OracleContext,
                          connectstring: string,
                          username: string,
                          passwd: string,
-                         ocOut: var OracleConnection) =
+                         ocOut: var OracleConnection,
+                         stmtCacheSize : int = 50) =
   ## creates a connection for the given context and credentials.
   ## throws IOException in an error case
   ocOut.context = octx
@@ -325,16 +326,29 @@ proc createConnection*(octx: var OracleContext,
     passwd.cstring, passwd.cstring.len.uint32, connectstring,
     connectstring.len.uint32,
     octx.commonParams.addr, octx.connectionParams.addr, addr(
-        ocOut.connection))) ==
-      DpiResult.FAILURE:
+        ocOut.connection))).isFailure:
     raise newException(IOError, "createConnection: " &
         getErrstr(octx))
     {.effects.}
-
+  else:
+    if DpiResult(dpiConn_setStmtCacheSize(ocOut.connection,stmtCacheSize.uint32)).isFailure:
+      raise newException(IOError, "createConnection: " &
+      getErrstr(octx))
+    {.effects.}
 
 proc releaseConnection*(conn: var OracleConnection): DpiResult =
   ## releases the connection
   result = DpiResult(dpiConn_release(conn.connection))
+
+proc terminateExecution*(conn : var OracleConnection) : DpiResult =
+  ## terminates any running/pending execution on the server
+  ## associated to the given connection
+  result = DpiResult(dpiConn_breakExecution(conn.connection))
+
+proc setDbOperationAttribute*(conn : var OracleConnection,attribute : string): DpiResult =
+  ## end to end tracing for auditTrails and Enterprise Manager
+  result = DpiResult(dpiConn_setDbOp(conn.connection, 
+                             $(attribute.cstring),attribute.len.uint32))
 
 proc newPreparedStatement*(conn: var OracleConnection,
                            query: SqlQuery,
