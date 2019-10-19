@@ -908,10 +908,10 @@ when isMainModule:
                                       Int64ColumnTypeParam,
                                       BindIdx(2),10)
     for i in countup(0,9):
-      var tst = some("test_äüö" & $i)
-      setString(c1param,i,tst)
+      c1param.setString(i,some("test_äüö" & $i))
       c2param[i].setInt64(some(i.int64))
-      
+      # TODO: cleanup setter API
+
     var rset : ResultSet
     var result : DpiResult
     conn.withTransaction(result):
