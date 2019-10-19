@@ -735,6 +735,26 @@ iterator resultSetRowIterator*(rs: var ResultSet): DpiRow =
         {.effects.}
       rs.rsCurrRow = 0
 
+iterator bulkBindIterator*(pstmt: var PreparedStatement,
+                           rs: var ResultSet,
+                           maxRows : int,
+                           maxRowBufferIdx : int): 
+                                    tuple[rowcounter:int,
+                                          buffercounter:int] =
+  ## convenience iterator for bulk binding.
+  ## it will countup to maxRows but will return the next
+  ## index of the rowBuffer. maxRowBufferIdx is the high watermark.
+  ## if it is reached executeStatement is called automatically
+  ## and the internal counter is reset to 0.
+  var rowBufferIdx = 0.int
+  for i in countup(0,maxRows):
+    yield (rowcounter:i,buffercounter:rowBufferIdx)
+    if rowBufferIdx == maxRowBufferIdx: # 10 buffered rows
+      pstmt.executeStatement(rs)
+      rowBufferIdx = 0
+    else:
+      inc rowBufferIdx                     
+
 
 template withTransaction*(dbconn: OracleConnection, rc: var DpiResult,
     body: untyped) =
@@ -962,30 +982,23 @@ when isMainModule:
 
     conn.withTransaction(result):
       withPreparedStatement(pstmt):
-        var paramidx : int = 0
         var varc2 : Option[int64]
-        for i in countup(0,19):
+        for i,bidx in pstmt.bulkBindIterator(rset,19,9):
           if i == 9:
             varc2 = none(int64) # simulate dbNull
           else:
             varc2 = some(i.int64)
-          c1param.setString(paramidx,some("test_äüö" & $i)) #pk
-          c2param[paramidx].setInt64(varc2)
-          c3param.setBytes(paramidx,some(@[(0xAA+i).byte,0xBB,0xCC]))
-          setFloat(c4param[paramidx],some(i.float32+0.123.float32))
-          c5param[paramidx].setDouble(some(i.float64+99.12345))
-          let dt = getTime().local
-          c6param[paramidx].setDateTime(some(dt))
-          if paramidx == 9: # 10 buffered rows
-            pstmt.executeStatement(rset)
-            paramidx = 0
-          else:
-            inc paramidx
-
+          c1param.setString(bidx,some("test_äüö" & $i)) #pk
+          c2param[bidx].setInt64(varc2)
+          c3param.setBytes(bidx,some(@[(0xAA+i).byte,0xBB,0xCC]))
+          setFloat(c4param[bidx],some(i.float32+0.123.float32))
+          c5param[bidx].setDouble(some(i.float64+99.12345))
+          c6param[bidx].setDateTime(some(getTime().local))
+    
     var selectStmt: SqlQuery = osql"select c1,c2,rawtohex(c3) as c3,c4,c5,c6 from hr.demotesttable"
     conn.newPreparedStatement(selectStmt, pstmt, 20)
 
-    withPreparedStatement(pstmt):
+    withPreparedStatement(pstmt): 
       pstmt.executeStatement(rset)
       for row in resultSetRowIterator(rset):
         echo $fetchString(row[0].data) & "  " & $fetchInt64(row[1].data) & 
