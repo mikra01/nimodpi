@@ -166,6 +166,9 @@ template newStringColTypeParam(strlen: int): ColumnType =
   ## helper to construct a string ColumnType with specified len
   (DpiNativeCType.BYTES, DpiOracleType.OTVARCHAR, strlen, false, 0)
 
+template newRawColTypeParam(bytelen: int): ColumnType =
+  ## helper to construct a string ColumnType with specified len
+  (DpiNativeCType.BYTES, DpiOracleType.OTRAW,bytelen,true, 0)
 
 template `[]`*(row: DpiRow, colname: string): DpiRowElement =
   ## access of the iterators DpiRowElement by column name.
@@ -913,7 +916,8 @@ when isMainModule:
 
       var ctableq = osql""" CREATE TABLE HR.DEMOTESTTABLE(
                                 C1 VARCHAR2(20) NOT NULL 
-                              , C2 NUMBER(5,0) 
+                              , C2 NUMBER(5,0)
+                              , C3 raw(20) 
                               , CONSTRAINT DEMOTESTTABLE_PK PRIMARY KEY(C1)
             ENABLE 
           ) """
@@ -925,7 +929,7 @@ when isMainModule:
       #  conn.executeDDL(ctableDrop)
 
     var insertStmt: SqlQuery =
-      osql" insert into HR.DEMOTESTTABLE(C1,C2) values (:1,:2) "
+      osql" insert into HR.DEMOTESTTABLE(C1,C2,C3) values (:1,:2,:3) "
 
     conn.newPreparedStatement(insertStmt, pstmt, 10)
 
@@ -933,7 +937,8 @@ when isMainModule:
                      BindIdx(1), 10)
     let c2param = pstmt.addBindParameter(Int64ColumnTypeParam,
                                           BindIdx(2), 10)
-    
+    let c3param = pstmt.addBindParameter(newRawColTypeParam(5),
+                     3.BindIdx,10)
     # TODO: cleanup setter API
 
     var rset: ResultSet
@@ -945,19 +950,21 @@ when isMainModule:
         for i in countup(0,19):
           c1param.setString(paramidx, some("test_äüö" & $i))
           c2param[paramidx].setInt64(some(i.int64))
+          c3param.setBytes(paramidx,some(@[0xAA.byte,0xBB,0xCC]))
           if paramidx == 9: # 10 buffered rows
             pstmt.executeStatement(rset)
             paramidx = 0
           else:
             inc paramidx
 
-    var selectStmt: SqlQuery = osql"select c1,c2 from hr.demotesttable"
+    var selectStmt: SqlQuery = osql"select c1,c2,rawtohex(c3) from hr.demotesttable"
     conn.newPreparedStatement(selectStmt, pstmt, 20)
 
     withPreparedStatement(pstmt):
       pstmt.executeStatement(rset)
       for row in resultSetRowIterator(rset):
-        echo $fetchString(row[0].data) & "  " & $fetchInt64(row[1].data)
+        echo $fetchString(row[0].data) & "  " & $fetchInt64(row[1].data) & 
+          " " & $fetchString(row[2].data)
 
     # drop the table
     var dropStmt: SqlQuery = osql"drop table hr.demotesttable"

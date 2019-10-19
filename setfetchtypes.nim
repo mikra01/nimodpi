@@ -154,13 +154,15 @@ template setBytes*(param : ParamTypeRef , rownum : int, value: Option[seq[byte]]
     ## bind parameter setter seq[byte] type. this setter operates always with index 0
     ## the value is copied into the drivers domain 
     if value.isNone:
-      param.data.setDbNull
+      param.buffer.setDbNull
     else:
       param.buffer.setNotDbNull  
+      let seqb : seq[byte] = value.get
+      let cstr = cast[cstring](unsafeAddr(seqb[0]))
       discard dpiVar_setFromBytes(param.paramVar,
                                   rownum.uint32,
-                                  addr(value.some[0]),
-                                  value.some.len)    
+                                  cstr,
+                                  seqb.len.uint32)    
     
 template fetchRowId*( param : ptr dpiData ) : ptr dpiRowid =
     ## fetches the rowId (internal representation).
