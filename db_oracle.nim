@@ -350,6 +350,17 @@ proc setDbOperationAttribute*(conn : var OracleConnection,attribute : string): D
   result = DpiResult(dpiConn_setDbOp(conn.connection, 
                              $(attribute.cstring),attribute.len.uint32))
 
+proc subscribe(conn : var OracleConnection, params : ptr dpiSubscrCreateParams,
+               outSubscr : ptr ptr dpiSubscr) :  DpiResult =
+  ## creates a new subscription (notification) on databas events              
+  result = DpiResult(dpiConn_subscribe(conn.connection, 
+                     params,outSubscr))               
+                     
+proc unsubscribe(conn : var OracleConnection, subscription : ptr dpiSubscr) : DpiResult =
+  ## unsubscribe the subscription
+  result = DpiResult(dpiConn_unsubscribe(conn.connection,subscription))
+
+
 proc newPreparedStatement*(conn: var OracleConnection,
                            query: SqlQuery,
                            outPs: var PreparedStatement,
