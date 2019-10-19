@@ -355,7 +355,7 @@ proc subscribe(conn : var OracleConnection, params : ptr dpiSubscrCreateParams,
   ## creates a new subscription (notification) on databas events              
   result = DpiResult(dpiConn_subscribe(conn.connection, 
                      params,outSubscr))               
-                     
+
 proc unsubscribe(conn : var OracleConnection, subscription : ptr dpiSubscr) : DpiResult =
   ## unsubscribe the subscription
   result = DpiResult(dpiConn_unsubscribe(conn.connection,subscription))
@@ -649,6 +649,35 @@ proc executeStatement*(prepStmt: var PreparedStatement,
   discard
   # TODO: implement
 
+proc bindArrayParams(prepStmt: var PreparedStatement, rowBufferSize : int) = 
+  for i in prepStmt.boundParams.low .. prepStmt.boundParams.high:
+    let bp = prepStmt.boundParams[i]
+    if bp.rowBufferSize > 1:
+      discard dpiVar_setNumElementsInArray(bp.paramVar,
+                                         rowBufferSize.uint32)
+
+    if bp.bindPosition.kind == BindInfoType.byPosition:
+      if DpiResult(dpiStmt_bindByPos(prepStmt.pStmt,
+                                     bp.bindPosition.paramVal.uint32,
+                                     bp.paramVar
+        )
+      ).isFailure:
+        raise newException(IOError, "bindArrayParams: " &
+                  getErrstr(prepStmt.relatedConn.context))
+        {.effects.}
+
+    elif bp.bindPosition.kind == BindInfoType.byName:
+      if DpiResult(dpiStmt_bindByName(prepStmt.pStmt,
+                                     bp.bindPosition.paramName,
+                                     bp.bindPosition.paramName.len.uint32,
+                                     bp.paramVar
+        )
+      ) == DpiResult.FAILURE:
+        raise newException(IOError, "bindArrayParams: " &
+                         $bp.bindPosition.paramName &
+                           getErrstr(prepStmt.relatedConn.context))
+        {.effects.}  
+
 proc executeStatement*(prepStmt: var PreparedStatement,
                         outRs: var ResultSet,
                         dpiMode: uint32 = DpiModeExec.DEFAULTMODE.ord) =
@@ -785,7 +814,10 @@ iterator bulkBindIterator*(pstmt: var PreparedStatement,
       rowBufferIdx = 0
     else:
       inc rowBufferIdx                     
-
+  if rowBufferIdx > 0:
+    bindArrayParams(pstmt,rowBufferIdx)
+    discard executeMany(pstmt,DpiModeExec.DEFAULTMODE.ord) 
+    # hack
 
 template withTransaction*(dbconn: OracleConnection, rc: var DpiResult,
     body: untyped) =
@@ -1014,7 +1046,7 @@ when isMainModule:
     conn.withTransaction(result):
       withPreparedStatement(pstmt):
         var varc2 : Option[int64]
-        for i,bidx in pstmt.bulkBindIterator(rset,19,9):
+        for i,bidx in pstmt.bulkBindIterator(rset,55,9):
           if i == 9:
             varc2 = none(int64) # simulate dbNull
           else:
