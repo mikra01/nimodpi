@@ -1,6 +1,7 @@
 import os
 import times
 import options
+import encodings
 import nimodpi
 
 # Copyright (c) 2019 Michael Krauter
@@ -780,7 +781,7 @@ template executeDDL*(conn: var OracleConnection,
 when isMainModule:
   ## the HR Schema is used (XE) for the following tests
   const
-    lang: NlsLang = "WE8ISO8859P15".NlsLang
+    lang: NlsLang = "UTF8".NlsLang
     oracleuser: string = "sys"
     pw: string = "<pwd>"
     connectionstr: string = """(DESCRIPTION = (ADDRESS = 
