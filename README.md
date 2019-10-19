@@ -8,24 +8,20 @@ Oracle ODPI-C wrapper for Nim
 - nimterop 
 
 ### how to install
-just import "nimodpi" within your project. See /demo/demo.nim for an example. This
-is the original ODPI-C API. 
+just import "db_oracle" within your project. 
+the dependent ODPI-C source is directly imported into your project (via nimterop) 
+See the "isMainModule" section at the end of the module for some examples.
+
+Besides the abstraction layer you can also consume the raw API if something is
+missing ( or PR me your solution ).
+See /demo/demo.nim for some direct ODPI-C examples. 
 The subdir /demo also contains an example how sqlplus could be utilised for script execution.
-
-ODPI-C is directly included into your project.
-nimterop downloads the ODPI-C sourcecode into subdirectory /build, 
-processes it and injects the dependencies within the nimcache directory.
-
-The high-level nim API is in db_oracle (nimodpi will be automatically included).
-At the moment only selects without parameter binding possible. An example how to use
-it is at the end of the file.
-
 
 ### Remarks
 I tested it only for the IA64 architecture.
 
 ### Oracle XE installation
-For testing you could install a local copy of the oracle xe installation:
+For testing just install a local copy of the oracle xe:
 https://www.oracle.com/database/technologies/appdev/xe.html
 
 The oracle instant client is already included.
@@ -54,12 +50,15 @@ This user is locked by default so the examples will only work if you use
 sysdba for the connecting user.
 
 ### demo
-run the demo with "nimble demo".
-
 before running, adjust  "/demo/democredentials.nim" (login and connection_string) 
 for the database you like to connect to. No ddl is executed. 
 
+run the raw ODPI-C demo with "nimble demo".
+run the nim demo with "nimble db_oracle".
+
 ### Todo
-direct bindings almost completed except SODA; a nimish abstraction layer is WIP (see db_oracle.nim)
+direct bindings almost completed except SODA; 
+the nimish abstraction layer (db_oracle) is functional but more examples needed.
+next steps would be provide documented examples and cleanup of some quirks.
 
 Comments, bug reports and PR´s appreciated.
