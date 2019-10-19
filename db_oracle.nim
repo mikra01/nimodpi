@@ -23,18 +23,18 @@ import nimodpi
     - within the application domain. "peeking" data is possible via pointers
     - only the basic types are implemented (numeric, rowid, varchar2, timestamp)
     - pl/sql procedure exploitation is possible with in/out and inout-parameters
-    - consuming refcursor is also possible (see demo.nim)
+    - consuming refcursor is also possible (see examples at the end of the file)
     - TODO: implement LOB/BLOB handling
     -
     - designing a vendor generic database API often leads to clumpsy workaround solutions.
-      due to that it's out of scope of this project. it's more valueable to wrap the vendor
+      due to that that's out of scope of this project. it's more valueable to wrap the vendor
       specific parts into a own module with a question/answer style API according to the business-case
     -
     - besides the connections there are three basic important objects:
     - ParamType is used for parameter binding (in/out/inout) and consuming result columns
     - PreparedStatement is used for executing dml/ddl with or without parameters. internal resources
     - are not freed unless destroy is called.
-    - ResultSets are used to consume query results and can be reused (WIP)
+    - ResultSets are used to consume query results and can be reused.
     - it provides a row-iterator-style
     - API and a direct access API of the buffer (by index)
     -
@@ -43,7 +43,6 @@ import nimodpi
     - index-access of a resultset is not bounds checked.
     - if a internal error happens, execution is terminated and the cause could be extracted with the
     - template getErrstr out of the context.
-    - the API does not prevent misuse actually. 
     -
     - for testing and development the XE database is sufficient.
     - version 18c also supports partitioning, PDB's and so on.
@@ -96,6 +95,7 @@ type
     # if a refcursor is within the statement it can't be reused
   
   ParamTypeRef* = ref ParamType
+    ## handle to the param type
 
   ParamTypeList* = seq[ParamTypeRef]
 
@@ -150,6 +150,12 @@ type
 
 include odpi_obj2string
 include odpi_to_nimtype
+
+
+template newStringColTypeParam(strlen : int) : ColumnType =
+  ## helper to construct a string ColumnType with specified len
+  (DpiNativeCType.BYTES,DpiOracleType.OTVARCHAR,strlen,false,0)    
+
 
 template `[]`*(row : DpiRow, colname : string): DpiRowElement =
   ## access of the iterators DpiRowElement by column name.
@@ -316,7 +322,7 @@ proc releaseConnection*(conn: var OracleConnection): DpiResult =
   result = DpiResult(dpiConn_release(conn.connection))
 
 proc newPreparedStatement*(conn: var OracleConnection, 
-                           query: var SqlQuery,
+                           query: SqlQuery,
                            outPs: var PreparedStatement,
                            bufferedRows : int,
                            stmtCacheKey: string = "" ) =
@@ -463,7 +469,6 @@ proc destroy*(prepStmt: var PreparedStatement) =
   ## additional resources of a present resultSet
   ## are also freed. a preparedStatement with refCursor can not
   ## be reused.
-
   for i in prepStmt.boundParams.low .. prepStmt.boundParams.high:
     discard dpiVar_release(prepStmt.boundParams[i].paramVar)
   for i in prepStmt.rsOutputCols.low .. prepStmt.rsOutputCols.high:
@@ -472,6 +477,15 @@ proc destroy*(prepStmt: var PreparedStatement) =
   prepStmt.rsOutputCols.setLen(0)
   discard dpiStmt_release(prepStmt.pStmt)
 
+template executeMany(prepStmt : PreparedStatement, 
+                 dpiMode : uint32 = 
+                   DpiModeExec.DEFAULTMODE.ord) : DpiResult =
+  ## bulk insert - no results are fetched
+  # hacky - simple fetch the rownum from the first bound parameter
+  DpiResult(dpiStmt_executeMany(prepStmt.pStmt,
+                                         dpimode,
+                                         prepStmt.boundParams[0].
+                                           rowBufferSize.uint32))
 
 proc executeAndInitResultSet(prepStmt : var PreparedStatement,
                          dpiMode: uint32 = DpiModeExec.DEFAULTMODE.ord,
@@ -484,11 +498,15 @@ proc executeAndInitResultSet(prepStmt : var PreparedStatement,
   
   if not isRefCursor: 
   # TODO: get rid of quirky isRefCursor flag   
-    result = DpiResult(dpiStmt_execute(prepStmt.pStmt,
+    if prepStmt.boundParams.len > 0 and 
+       prepStmt.boundParams[0].rowBufferSize > 1:
+      result = executeMany(prepStmt,dpiMode)
+    else:    
+      result = DpiResult(dpiStmt_execute(prepStmt.pStmt,
                                        dpiMode,
                                        prepStmt.columnCount.addr
+        )
       )
-    )
   else:
     result = DpiResult.SUCCESS
     discard dpiStmt_getNumQueryColumns(prepStmt.pStmt, prepStmt.columnCount.addr)
@@ -574,6 +592,14 @@ proc closeRefCursor*(rs : var ResultSet) =
   for i in rs.rsOutputCols.low .. rs.rsOutputCols.high:
     discard dpiVar_release(rs.rsOutputCols[i].paramVar)
   rs.rsOutputCols.setLen(0)
+
+proc executeStatement*(prepStmt: var PreparedStatement,
+  numRows : int,
+  dpiMode: uint32 = DpiModeExec.DEFAULTMODE.ord) =
+  ## executes the statement without returning any rows.
+  ## suitable for bulk insert
+  discard
+  # TODO: implement
 
 proc executeStatement*(prepStmt: var PreparedStatement,
                         outRs: var ResultSet,
@@ -819,8 +845,12 @@ when isMainModule:
         # TODO: plsql example with types and select * from table()
 
     var refCursorQuery: SqlQuery = osql""" begin 
-            open :1 for select 'teststr' StrVal from dual union all select 'teststr1' from dual; 
-            open :2 for select first_name,last_name from hr.employees where department_id = :3;
+            open :1 for select 'teststr' StrVal from dual 
+                                union all 
+                        select 'teststr1' from dual; 
+            open :2 for select first_name,last_name 
+                         from hr.employees 
+                          where department_id = :3;
             end; """
     # FIXME: type plsql blocks 
     # refcursor example
@@ -854,20 +884,53 @@ when isMainModule:
         for row in resultSetRowIterator(refc):
           echo $fetchString(row[0].data) & " " & $fetchString(row[1].data) 
     
-      var ctableq = osql""" CREATE TABLE HR.TESTTABLE(
+      var ctableq = osql""" CREATE TABLE HR.DEMOTESTTABLE(
                                 C1 VARCHAR2(20) NOT NULL 
-                              , C2 NUMBER 
-                              , CONSTRAINT TESTTABLE_PK PRIMARY KEY(C1)
+                              , C2 NUMBER(5,0) 
+                              , CONSTRAINT DEMOTESTTABLE_PK PRIMARY KEY(C1)
             ENABLE 
           ) """
 
-      var ctableDrop = osql""" DROP TABLE HR.TESTTABLE """  
       try:
         conn.executeDDL(ctableq)
       except:
-        conn.executeDDL(ctableDrop)
+        discard
+      #  conn.executeDDL(ctableDrop)
  
- 
+    var insertStmt: SqlQuery = 
+        osql" insert into HR.DEMOTESTTABLE(C1,C2) values (:1,:2) "
+
+    conn.newPreparedStatement(insertStmt,pstmt,10)
+
+    let c1param =  addBindParameter(pstmt,newStringColTypeParam(20),
+                     BindIdx(1),10)
+    let c2param =  addBindParameter(pstmt,
+                                      Int64ColumnTypeParam,
+                                      BindIdx(2),10)
+    for i in countup(0,9):
+      var tst = some("test_äüö" & $i)
+      setString(c1param,i,tst)
+      c2param[i].setInt64(some(i.int64))
+      
+    var rset : ResultSet
+    var result : DpiResult
+    conn.withTransaction(result):
+      withPreparedStatement(pstmt):
+        echo "bulkinsert"
+        executeStatement(pstmt,rset)
+
+    var selectStmt : SqlQuery = osql"select c1,c2 from hr.demotesttable"  
+    conn.newPreparedStatement(selectStmt,pstmt,20)
+
+    withPreparedStatement(pstmt):
+      executeStatement(pstmt,rset)
+      for row in resultSetRowIterator(rset):
+        echo $fetchString(row[0].data) & "  " & $fetchInt64(row[1].data) 
+
+    # drop the table
+    var dropStmt : SqlQuery = osql"drop table hr.demotesttable"  
+    conn.executeDDL(dropStmt)
+    
     discard conn.releaseConnection
     discard destroyOracleContext(octx)
 
