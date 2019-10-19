@@ -932,18 +932,23 @@ when isMainModule:
                      BindIdx(1), 10)
     let c2param = pstmt.addBindParameter(Int64ColumnTypeParam,
                                           BindIdx(2), 10)
-    for i in countup(0, 9):
-      c1param.setString(i, some("test_äüö" & $i))
-      c2param[i].setInt64(some(i.int64))
-      # TODO: cleanup setter API
+    
+    # TODO: cleanup setter API
 
     var rset: ResultSet
     var result: DpiResult
 
     conn.withTransaction(result):
       withPreparedStatement(pstmt):
-        echo "bulkinsert"
-        pstmt.executeStatement(rset)
+        var paramidx : int = 0
+        for i in countup(0,19):
+          c1param.setString(paramidx, some("test_äüö" & $i))
+          c2param[paramidx].setInt64(some(i.int64))
+          if paramidx == 9: # 10 buffered rows
+            pstmt.executeStatement(rset)
+            paramidx = 0
+          else:
+            inc paramidx
 
     var selectStmt: SqlQuery = osql"select c1,c2 from hr.demotesttable"
     conn.newPreparedStatement(selectStmt, pstmt, 20)
