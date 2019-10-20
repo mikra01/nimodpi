@@ -865,10 +865,12 @@ when isMainModule:
   var errmsg: string
 
   if isSuccess(newOracleContext(lang, DpiAuthMode.SYSDBA, octx, errmsg)):
-
+    # create the context with the nls_lang and authentication Method
     var conn: OracleConnection
 
     createConnection(octx, connectionstr, oracleuser, pw, conn)
+    # create the connection with the desired server, 
+    # credentials and the context
 
     var query: SqlQuery = osql"""select 100 as col1, 'äöü' as col2 from dual 
           union all  
@@ -876,6 +878,7 @@ when isMainModule:
           union all
           select 300 , 'äöü3' from dual
           """
+      # query is unused at the moment
 
     var query2: SqlQuery = osql""" select 
                   rowid,
@@ -896,14 +899,23 @@ when isMainModule:
     var pstmt: PreparedStatement
 
     newPreparedStatement(conn, query2, pstmt, 10)
+    # create prepared statement for the specified query and
+    # the number of buffered result-rows. the number of buffered
+    # rows (window) is fixed and can't changed later on
     var rs: ResultSet
 
     var param = addBindParameter(pstmt,
                      Int64ColumnTypeParam,
-                      "param1", 1)
+                      "param1",1)
     param[0].setInt64(some(80.int64))
+    # create and set the bind parameter. query bind
+    # parameter are always non-columnar. 
+    # TODO: better separation -> addQueryBindParameter
+    #                         -> addArrayBindParameter
 
     executeStatement(pstmt, rs)
+    # execute the statement. if the resulting rows
+    # fit into entire window we are done here.
     var ctl: ColumnTypeList = rs.getColumnTypeList
 
     for i,ct in rs.columnTypesIterator:
@@ -911,9 +923,9 @@ when isMainModule:
        $(i+1) & " " & $ct
 
     for row in resultSetRowIterator(rs):
+      # the result iterator fetches internally further
+      # rows if present
       # retrieve column values by columnname or index
-      # TODO: example with transaction
-      # TODO: example : reuse preparedStatement with different parameter vals
       echo $fetchRowId(row[0].data) &
          " " & $fetchDouble(row[1].data) &
              " " & $fetchString(row["FIRST_NAME"].data) &
@@ -925,6 +937,8 @@ when isMainModule:
     # rerun preparedStatement with a different parameter value
     param[0].setInt64(some(10.int64))
     executeStatement(pstmt, rs)
+    # the parameter is changed here and the query is 
+    # re-executed 
 
     for row in resultSetRowIterator(rs):
       # retrieve column values by columnname or index
@@ -937,6 +951,10 @@ when isMainModule:
     echo "query1 executed 2nd run - param department_id = 10 "
 
     pstmt.destroy
+    # the prepared statement is destroyed and the 
+    # resources are freed (mandatory). the withPreparedStatement
+    # template calls this implicit.  
+      
       # TODO: plsql example with types and select * from table()
 
     var refCursorQuery: SqlQuery = osql""" begin 
@@ -951,14 +969,18 @@ when isMainModule:
 
     # refcursor example
     newPreparedStatement(conn, refCursorQuery, pstmt, 1)
+    # this query block contains two independent refcursors
+    # and the snd is parameterised.
 
     withPreparedStatement(pstmt):
       let rc1 = pstmt.addBindParameter(RefCursorColumnTypeParam,
                                          BindIdx(1), 1)
+      # to consume the refcursor a bindParameter is needed                                   
       let param2 = pstmt.addBindParameter(RefCursorColumnTypeParam,
                                          BindIdx(2), 1)
       let deptId = pstmt.addBindParameter(Int64ColumnTypeParam,
                                          BindIdx(3), 1)
+      # filter: parameter for department_id                                   
       deptId[0].setInt64(some(80.int64))
 
       pstmt.executeStatement(rs)
@@ -967,8 +989,9 @@ when isMainModule:
       var refc: ResultSet
 
       pstmt.openRefCursor(rc1, refc, 1, DpiModeExec.DEFAULTMODE.ord)
-
-      withRefCursor(refc):
+      # opens the refcursor. once consumed it can't be reopended (TODO: check
+      # if that's a ODPI-C limitation)
+      withRefCursor(refc):  # auto-cleanup of internal resources
         for row in resultSetRowIterator(refc):
           echo $fetchString(row[0].data)
 
@@ -976,7 +999,7 @@ when isMainModule:
 
       pstmt.openRefCursor(param2, refc, 10, DpiModeExec.DEFAULTMODE.ord)
 
-      withRefCursor(refc):
+      withRefCursor(refc): # auto-cleanup of internal resources
         for row in resultSetRowIterator(refc):
           echo $fetchString(row[0].data) & " " & $fetchString(row[1].data)
 
@@ -992,7 +1015,8 @@ when isMainModule:
           ) """
 
       try:
-        conn.executeDDL(ctableq)
+        conn.executeDDL(ctableq) 
+        # execution of a single statement with no results
       except:
         discard
       #  conn.executeDDL(ctableDrop)
@@ -1002,6 +1026,9 @@ when isMainModule:
                                         values (:1,:2,:3,:4,:5,:6) """
 
     conn.newPreparedStatement(insertStmt, pstmt, 10)
+    
+    # bulk insert example. 55 rows are inserted with a buffer
+    # window of 10 rows
 
     let c1param = pstmt.addBindParameter(newStringColTypeParam(20),
                      BindIdx(1), 10)
@@ -1021,20 +1048,24 @@ when isMainModule:
                                           DpiOracleType.OTTIMESTAMP_TZ,
                                           1,false,0),
                        6.BindIdx,10)                  
- 
-    # TODO: cleanup setter API
-
+    # if a nativeType/oracleType combination is not implemented by ODPI-C
+    # you will receive an exception here
+   
     var rset: ResultSet
     var result: DpiResult
 
-    conn.withTransaction(result):
-      withPreparedStatement(pstmt):
+    conn.withTransaction(result): # commit after this block
+      withPreparedStatement(pstmt): # cleanup of preparedStatement
         var varc2 : Option[int64]
         for i,bidx in pstmt.bulkBindIterator(rset,55,9):
+          # convenience iterator. if the window is filled
+          # contents are flushed to the database.
           if i == 9:
             varc2 = none(int64) # simulate dbNull
           else:
             varc2 = some(i.int64)
+          # unfortunately setString/setBytes have a different
+          # API than the value-parameter types  
           c1param.setString(bidx,some("test_äüö" & $i)) #pk
           c2param[bidx].setInt64(varc2)
           c3param.setBytes(bidx,some(@[(0xAA+i).byte,0xBB,0xCC]))
@@ -1043,8 +1074,11 @@ when isMainModule:
           c6param[bidx].setDateTime(some(getTime().local))
     
     var selectStmt: SqlQuery = osql"select c1,c2,rawtohex(c3) as c3,c4,c5,c6 from hr.demotesttable"
+    # read now the committed stuff
+    
     conn.newPreparedStatement(selectStmt, pstmt, 20)
-
+    # 20 rows are buffered internally
+   
     withPreparedStatement(pstmt): 
       pstmt.executeStatement(rset)
       for row in resultSetRowIterator(rset):
@@ -1056,6 +1090,7 @@ when isMainModule:
     # drop the table
     var dropStmt: SqlQuery = osql"drop table hr.demotesttable"
     conn.executeDDL(dropStmt)
+    # cleanup - table drop
 
     discard conn.releaseConnection
     discard destroyOracleContext(octx)
