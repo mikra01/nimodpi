@@ -464,9 +464,8 @@ proc addBindParameter(ps: var PreparedStatement,
 
 proc addBindParameter*(ps: var PreparedStatement,
                          coltype: ColumnType,
-                         paramName: string, boundRows: int,
-                         isPlSqlArray: bool = false): ParamTypeRef =
-  ## constructs a bindparameter by parameterName.
+                         paramName: string): ParamTypeRef =
+  ## constructs a non-array bindparameter by parameterName.
   ## throws IOException in case of error.
   ## see https://oracle.github.io/odpi/doc/user_guide/data_types.html
   ## for supported type combinations of ColumnType.
@@ -477,13 +476,12 @@ proc addBindParameter*(ps: var PreparedStatement,
   ## this depends on the underlying query
   addBindParameter(ps, BindInfo(kind: BindInfoType.byName,
                                 paramName: paramName),
-                    coltype, isPlSqlArray, boundRows)
+                    coltype,false,1.int)
 
 proc addBindParameter*(ps: var PreparedStatement,
                          coltype: ColumnType,
-                         idx: BindIdx, boundRows: int,
-                         isPlSqlArray: bool = false): ParamTypeRef =
-  ## constructs a bindparameter by parameter index.
+                         idx: BindIdx): ParamTypeRef =
+  ## constructs a non-array bindparameter by parameter index.
   ## throws IOException in case of error.
   ## see https://oracle.github.io/odpi/doc/user_guide/data_types.html
   ## for supported type combinations of ColumnType.
@@ -494,7 +492,55 @@ proc addBindParameter*(ps: var PreparedStatement,
   ## this depends on the underlying query
   addBindParameter(ps, BindInfo(kind: BindInfoType.byPosition,
                                 paramVal: idx),
-                  coltype, isPlSqlArray, boundRows)
+                  coltype,false,1.int)
+           
+proc addArrayBindParameter*(ps: var PreparedStatement,
+                       coltype: ColumnType,
+                       paramName: string,
+                       rowCount : int, 
+                       isPlSqlArray : bool = false): ParamTypeRef =
+  ## constructs an array bindparameter by parameterName.
+  ## array parameters are used for bulk-insert or plsql-array-handling
+  ## throws IOException in case of error.
+  ## see https://oracle.github.io/odpi/doc/user_guide/data_types.html
+  ## for supported type combinations of ColumnType.
+  ## the parametername must be referenced within the
+  ## query with :<paramName>
+  ## after adding the parameter value can be set with the typed setters
+  ## on the ParamType. the type of the parameter is implicit in,out or in/out.
+  ## this depends on the underlying query
+  if ps.bufferedRows < rowCount:
+    raise newException(IOError, "addArrayBindParameter: " &
+      "given rowCount of " & $rowCount & " exceeds the preparedStatements maxBufferedRows" )
+    {.effects.}
+  
+  addBindParameter(ps, BindInfo(kind: BindInfoType.byName,
+                  paramName: paramName),
+                  coltype,isPlSqlArray,rowCount)
+
+proc addArrayBindParameter*(ps: var PreparedStatement,
+           coltype: ColumnType,
+           idx: BindIdx,
+           rowCount : int, 
+           isPlSqlArray : bool = false): ParamTypeRef =
+  ## constructs a array bindparameter by parameter index.
+  ## array parameters are used for bulk-insert or plsql-array-handling.
+  ## throws IOException in case of error.
+  ## see https://oracle.github.io/odpi/doc/user_guide/data_types.html
+  ## for supported type combinations of ColumnType.
+  ## the parameterindex must be referenced within the
+  ## query with :<paramIndex>.
+  ## the parameter value can be set with the typed setters on the ParamType.
+  ## the type of the parameter is implicit in,out or in/out.
+  ## this depends on the underlying query
+  if ps.bufferedRows < rowCount:
+    raise newException(IOError, "addArrayBindParameter: " &
+      "given rowCount of " & $rowCount & " exceeds the preparedStatements maxBufferedRows" )
+    {.effects.}
+
+  addBindParameter(ps, BindInfo(kind: BindInfoType.byPosition,
+                   paramVal: idx),
+                   coltype,isPlSqlArray,rowcount)
 
 
 proc addOutColumn(rs: var ResultSet, columnParam: ParamTypeRef) =
@@ -906,14 +952,14 @@ when isMainModule:
 
     var param = addBindParameter(pstmt,
                      Int64ColumnTypeParam,
-                      "param1",1)
+                      "param1")
     param[0].setInt64(some(80.int64))
     # create and set the bind parameter. query bind
     # parameter are always non-columnar. 
     # TODO: better separation -> addQueryBindParameter
     #                         -> addArrayBindParameter
 
-    executeStatement(pstmt, rs)
+    executeStatement(pstmt,rs)
     # execute the statement. if the resulting rows
     # fit into entire window we are done here.
     var ctl: ColumnTypeList = rs.getColumnTypeList
@@ -974,12 +1020,12 @@ when isMainModule:
 
     withPreparedStatement(pstmt):
       let rc1 = pstmt.addBindParameter(RefCursorColumnTypeParam,
-                                         BindIdx(1), 1)
+                                         BindIdx(1))
       # to consume the refcursor a bindParameter is needed                                   
       let param2 = pstmt.addBindParameter(RefCursorColumnTypeParam,
-                                         BindIdx(2), 1)
+                                         BindIdx(2))
       let deptId = pstmt.addBindParameter(Int64ColumnTypeParam,
-                                         BindIdx(3), 1)
+                                         BindIdx(3))
       # filter: parameter for department_id                                   
       deptId[0].setInt64(some(80.int64))
 
@@ -1030,21 +1076,21 @@ when isMainModule:
     # bulk insert example. 55 rows are inserted with a buffer
     # window of 10 rows
 
-    let c1param = pstmt.addBindParameter(newStringColTypeParam(20),
+    let c1param = pstmt.addArrayBindParameter(newStringColTypeParam(20),
                      BindIdx(1), 10)
-    let c2param = pstmt.addBindParameter(Int64ColumnTypeParam,
+    let c2param = pstmt.addArrayBindParameter(Int64ColumnTypeParam,
                                           BindIdx(2), 10)
-    let c3param = pstmt.addBindParameter(newRawColTypeParam(5),
+    let c3param = pstmt.addArrayBindParameter(newRawColTypeParam(5),
                      3.BindIdx,10)
-    let c4param = pstmt.addBindParameter((DpiNativeCType.FLOAT,
+    let c4param = pstmt.addArrayBindParameter((DpiNativeCType.FLOAT,
                                           DpiOracleType.OTNATIVE_FLOAT,
                                           1,false,0),
                      4.BindIdx,10)                  
-    let c5param = pstmt.addBindParameter((DpiNativeCType.DOUBLE,
+    let c5param = pstmt.addArrayBindParameter((DpiNativeCType.DOUBLE,
                                           DpiOracleType.OTNUMBER,
                                           1,false,0),
                       5.BindIdx,10)                  
-    let c6param = pstmt.addBindParameter((DpiNativeCType.TIMESTAMP,
+    let c6param = pstmt.addArrayBindParameter((DpiNativeCType.TIMESTAMP,
                                           DpiOracleType.OTTIMESTAMP_TZ,
                                           1,false,0),
                        6.BindIdx,10)                  
