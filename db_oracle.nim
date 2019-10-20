@@ -689,35 +689,8 @@ proc executeStatement*(prepStmt: var PreparedStatement,
 
   # probe if binds present
   if prepStmt.boundParams.len > 0:
-    for i in prepStmt.boundParams.low .. prepStmt.boundParams.high:
-      let bp = prepStmt.boundParams[i]
-      if bp.rowBufferSize > 1:
-        discard dpiVar_setNumElementsInArray(bp.paramVar,
-                                             bp.rowBufferSize.uint32)
-
-      if bp.bindPosition.kind == BindInfoType.byPosition:
-        if DpiResult(dpiStmt_bindByPos(prepStmt.pStmt,
-                                         bp.bindPosition.paramVal.uint32,
-                                         bp.paramVar
-          )
-        ).isFailure:
-          raise newException(IOError, "executeStatement/bindByPosition: " &
-                      getErrstr(prepStmt.relatedConn.context))
-          {.effects.}
-
-      elif bp.bindPosition.kind == BindInfoType.byName:
-        if DpiResult(dpiStmt_bindByName(prepStmt.pStmt,
-                                         bp.bindPosition.paramName,
-                                         bp.bindPosition.paramName.len.uint32,
-                                         bp.paramVar
-          )
-        ) == DpiResult.FAILURE:
-          raise newException(IOError, "executeStatement/bindByName: " &
-                             $bp.bindPosition.paramName &
-                               getErrstr(prepStmt.relatedConn.context))
-          {.effects.}
-
-
+    bindArrayParams(prepStmt,prepStmt.boundParams[0].rowBufferSize)
+    # FIXME: track the number of rows within the statement, not the param
   if DpiResult(prepStmt.executeAndInitResultSet(dpiMode, false)).isFailure:
     raise newException(IOError, "executeStatement/initResultSet: " &
                          getErrstr(prepStmt.relatedConn.context))
@@ -815,6 +788,7 @@ iterator bulkBindIterator*(pstmt: var PreparedStatement,
     else:
       inc rowBufferIdx                     
   if rowBufferIdx > 0:
+    # rows iterator finished but unsent data within buffer
     bindArrayParams(pstmt,rowBufferIdx)
     discard executeMany(pstmt,DpiModeExec.DEFAULTMODE.ord) 
     # hack
