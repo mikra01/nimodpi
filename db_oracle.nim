@@ -953,7 +953,7 @@ when isMainModule:
     var param = addBindParameter(pstmt,
                      Int64ColumnTypeParam,
                       "param1")
-    param[0].setInt64(some(80.int64))
+    param.setInt64(some(80.int64))
     # create and set the bind parameter. query bind
     # parameter are always non-columnar. 
     # TODO: better separation -> addQueryBindParameter
@@ -981,7 +981,7 @@ when isMainModule:
 
     echo "query1 executed - param department_id = 80 "
     # rerun preparedStatement with a different parameter value
-    param[0].setInt64(some(10.int64))
+    param.setInt64(some(10.int64))
     executeStatement(pstmt, rs)
     # the parameter is changed here and the query is 
     # re-executed 
@@ -1027,7 +1027,7 @@ when isMainModule:
       let deptId = pstmt.addBindParameter(Int64ColumnTypeParam,
                                          BindIdx(3))
       # filter: parameter for department_id                                   
-      deptId[0].setInt64(some(80.int64))
+      deptId.setInt64(some(80.int64))
 
       pstmt.executeStatement(rs)
 
@@ -1112,9 +1112,9 @@ when isMainModule:
             varc2 = some(i.int64)
           # unfortunately setString/setBytes have a different
           # API than the value-parameter types  
-          c1param.setString(bidx,some("test_äüö" & $i)) #pk
+          c1param.setString(some("test_äüö" & $i),bidx) #pk
           c2param[bidx].setInt64(varc2)
-          c3param.setBytes(bidx,some(@[(0xAA+i).byte,0xBB,0xCC]))
+          c3param.setBytes(some(@[(0xAA+i).byte,0xBB,0xCC]),bidx)
           setFloat(c4param[bidx],some(i.float32+0.123.float32))
           c5param[bidx].setDouble(some(i.float64+99.12345))
           c6param[bidx].setDateTime(some(getTime().local))
