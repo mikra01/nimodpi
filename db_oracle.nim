@@ -140,13 +140,13 @@ type
     columnCount: uint32 # deprecated
     pStmt: ptr dpiStmt
     statementInfo*: dpiStmtInfo # populated within the execute stage
-
+    bufferedRows*: int # refers to the maxArraySize
+    # used for both reading and writing to the database 
     rsOutputCols: ParamTypeList
     rsCurrRow*: int # reserved for iterating
     rsMoreRows*: bool #
     rsBufferRowIndex*: int
     rsRowsFetched*: int
-    rsBufferedRows*: int # refers to the maxArraySize
     rsColumnNames*: seq[string] #
 
   ResultSet* = PreparedStatement
@@ -382,7 +382,7 @@ proc newPreparedStatement*(conn: var OracleConnection,
 
   outPs.stmtCacheKey = stmtCacheKey.cstring
   outPs.boundParams = newSeq[ParamTypeRef](0)
-  outPs.rsBufferedRows = bufferedRows
+  outPs.bufferedRows = bufferedRows
 
   if DpiResult(dpiConn_prepareStmt(conn.connection, 0.cint, outPs.query,
       outPs.query.len.uint32, outPs.stmtCacheKey,
@@ -531,11 +531,9 @@ template executeMany(prepStmt: PreparedStatement,
                  dpiMode: uint32 =
                    DpiModeExec.DEFAULTMODE.ord): DpiResult =
   ## bulk insert - no results are fetched
-  # hacky - simple fetch the rownum from the first bound parameter
   DpiResult(dpiStmt_executeMany(prepStmt.pStmt,
                                          dpimode,
-                                         prepStmt.boundParams[0].
-    rowBufferSize.uint32))
+                                         prepStmt.bufferedRows.uint32))
 
 proc executeAndInitResultSet(prepStmt: var PreparedStatement,
                          dpiMode: uint32 = DpiModeExec.DEFAULTMODE.ord,
@@ -563,7 +561,7 @@ proc executeAndInitResultSet(prepStmt: var PreparedStatement,
         prepStmt.columnCount.addr)
     if DpiResult(
            dpiStmt_setFetchArraySize(prepStmt.pStmt,
-                                     prepStmt.rsBufferedRows.uint32)
+                                     prepStmt.bufferedRows.uint32)
       ).isFailure:
       raise newException(IOError, "newPreparedStatement: " &
         getErrstr(prepStmt.relatedConn.context))
@@ -602,7 +600,9 @@ proc executeAndInitResultSet(prepStmt: var PreparedStatement,
                           sizeIsBytes: true, scale: qinfo.typeinfo.scale.int),
                           paramVar: nil,
                           buffer: nil,
-                          rowBufferSize: prepStmt.rsBufferedRows)
+                          rowBufferSize: prepStmt.bufferedRows)
+                          # each out-resultset param owns the rowbuffersize
+                          # of the prepared statement
         addOutColumn(prepStmt, prepStmt.rsOutputCols[i-1])
 
 
@@ -625,7 +625,7 @@ proc openRefCursor*(ps: PreparedStatement, param: ParamTypeRef,
     param.isFetched = true
     outRefCursor.pstmt = param[0].fetchRefCursor
     outRefCursor.relatedConn = ps.relatedConn
-    outRefCursor.rsBufferedRows = bufferedRows
+    outRefCursor.bufferedRows = bufferedRows
     if DpiResult(executeAndInitResultSet(outRefCursor,
                                              dpiMode,
                                              true)).isFailure:
@@ -653,12 +653,12 @@ proc executeStatement*(prepStmt: var PreparedStatement,
   discard
   # TODO: implement
 
-proc bindArrayParams(prepStmt: var PreparedStatement, rowBufferSize : int) = 
+proc updateBindParams(prepStmt: var PreparedStatement, rowBufferSize : int) = 
   for i in prepStmt.boundParams.low .. prepStmt.boundParams.high:
     let bp = prepStmt.boundParams[i]
-    if bp.rowBufferSize > 1:
+    if rowBufferSize > 1:
       discard dpiVar_setNumElementsInArray(bp.paramVar,
-                                         rowBufferSize.uint32)
+                                           rowBufferSize.uint32)
 
     if bp.bindPosition.kind == BindInfoType.byPosition:
       if DpiResult(dpiStmt_bindByPos(prepStmt.pStmt,
@@ -693,7 +693,7 @@ proc executeStatement*(prepStmt: var PreparedStatement,
 
   # probe if binds present
   if prepStmt.boundParams.len > 0:
-    bindArrayParams(prepStmt,prepStmt.boundParams[0].rowBufferSize)
+    updateBindParams(prepStmt,prepStmt.bufferedRows)
     # FIXME: track the number of rows within the statement, not the param
   if DpiResult(prepStmt.executeAndInitResultSet(dpiMode, false)).isFailure:
     raise newException(IOError, "executeStatement/initResultSet: " &
@@ -725,7 +725,7 @@ proc fetchNextRows*(rs: var ResultSet): DpiResult =
     var rowsFetched: uint32 #out
 
     result = DpiResult(dpiStmt_fetchRows(rs.pStmt,
-                                         rs.rsBufferedRows.uint32,
+                                         rs.bufferedRows.uint32,
                                          bufferRowIndex.addr,
                                          rowsFetched.addr,
                                         moreRows.addr))
@@ -799,7 +799,7 @@ iterator bulkBindIterator*(pstmt: var PreparedStatement,
       inc rowBufferIdx                     
   if rowBufferIdx > 0:
     # rows iterator finished but unsent data within buffer
-    bindArrayParams(pstmt,rowBufferIdx)
+    updateBindParams(pstmt,rowBufferIdx)
     discard executeMany(pstmt,DpiModeExec.DEFAULTMODE.ord) 
     # hack
 
