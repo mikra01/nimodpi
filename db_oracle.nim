@@ -155,7 +155,12 @@ type
   DpiRowElement* = tuple[columnType: ColumnType,
                           columnName: string,
                           data: ptr dpiData]
+    ## contains the columnType and the datapointer to the
+    ## resultSets cell. the data can fetched with the 
+    ## fetch-signature templates.                         
   DpiRow* = seq[DpiRowElement]
+    ## contains the DpiRowElements of the current iterated row
+    ## of the ResultSet
 
 include odpi_obj2string
 include odpi_to_nimtype
@@ -621,8 +626,7 @@ proc openRefCursor*(ps: PreparedStatement, param: ParamTypeRef,
     outRefCursor.pstmt = param[0].fetchRefCursor
     outRefCursor.relatedConn = ps.relatedConn
     outRefCursor.rsBufferedRows = bufferedRows
-    if DpiResult(
-                     executeAndInitResultSet(outRefCursor,
+    if DpiResult(executeAndInitResultSet(outRefCursor,
                                              dpiMode,
                                              true)).isFailure:
       raise newException(IOError, "openRefCursor: " &
@@ -729,6 +733,12 @@ proc fetchNextRows*(rs: var ResultSet): DpiResult =
       rs.rsMoreRows = moreRows.bool
       rs.rsBufferRowIndex = bufferRowIndex.int
       rs.rsRowsFetched = rowsFetched.int
+
+iterator columnTypesIterator*(rs : var ResultSet) : tuple[idx : int, ct: ColumnType] = 
+  ## iterates over the resultSets columnTypes if present
+  var ctl: ColumnTypeList = rs.getColumnTypeList
+  for i in countup(ctl.low,ctl.high):
+    yield (i,ctl[i])
 
 iterator resultSetRowIterator*(rs: var ResultSet): DpiRow =
   ## iterates over the resultset row by row. no data copy is performed
@@ -896,9 +906,9 @@ when isMainModule:
     executeStatement(pstmt, rs)
     var ctl: ColumnTypeList = rs.getColumnTypeList
 
-    for i in ctl.low .. ctl.high:
-      echo "cname:" & rs.rsColumnNames[i] & " colnumidx: " & $(i+1) & " " &
-          $ctl[i]
+    for i,ct in rs.columnTypesIterator:
+      echo "cname:" & rs.rsColumnNames[i] & " colnumidx: " & 
+       $(i+1) & " " & $ct
 
     for row in resultSetRowIterator(rs):
       # retrieve column values by columnname or index
