@@ -162,9 +162,24 @@ type
     ## contains the DpiRowElements of the current iterated row
     ## of the ResultSet
 
+  Lob* = object
+    lobtype : ParamType
+    lobref : ptr dpiLob
+
+  DpiLobType* = enum CLOB = DpiOracleType.OTCLOB,
+                     NCLOB = DpiOracleType.OTNCLOB,
+                     BLOB = DpiOracleType.OTBLOB
+                
 include odpi_obj2string
 include odpi_to_nimtype
 
+proc newTempLob*( conn : OracleConnection, 
+                  lobtype : DpiLobType, 
+                  outlob : var Lob ) : DpiResult = 
+  ## creates a new temp lob
+  result = DpiResult(dpiConn_newTempLob(conn.connection,
+                      lobtype.ord.dpiOracleTypeNum,
+                      addr(outlob.lobref)))
 
 template newStringColTypeParam(strlen: int): ColumnType =
   ## helper to construct a string ColumnType with specified len

@@ -244,3 +244,9 @@ template fetchRefCursor*(param : ptr dpiData ) : ptr dpiStmt =
     ## fetches a refCursorType out of the result column. 
     param.value.asStmt
   
+
+template setLob*(param : ptr dpiLob, value : Option[seq[byte]] , rownum : int = 0) =
+  discard
+
+template getLob*(param : ptr dpiLob ) : Option[seq[byte]]  =
+  discard
