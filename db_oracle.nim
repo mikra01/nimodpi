@@ -92,11 +92,15 @@ type
     ## describes how the database type is mapped onto
     ## the database type.
     bindPosition*: BindInfo
+    # bind position and type -> rename 2 bindinfo
     queryInfo: dpiQueryInfo
+    # populated for returning statements
     columnType*: ColumnType
     # tracks the native- and dbtype
     paramVar: ptr dpiVar
+    # ODPI-C ptr to the variable def
     buffer: ptr dpiData
+    # ODPI-C ptr to the data buffer
     rowBufferSize: int
     isPlSqlArray: bool
     isFetched: bool
@@ -120,9 +124,11 @@ const
   RefCursorColumnTypeParam* = (DpiNativeCType.STMT,
                                    DpiOracleType.OTSTMT,
                                    1, false, 1)
+  ## predefined paramter for refcursor                                 
   Int64ColumnTypeParam* = (DpiNativeCType.INT64,
                                 DpiOracleType.OTNUMBER,
                                 1, false, 1)
+  ## predefined Int64 Type                              
   # TODO: use dpiStmt_executeMany for bulk binds
 type
   SqlQuery* = distinct cstring
@@ -131,23 +137,27 @@ type
 
   PreparedStatement* = object
     relatedConn: OracleConnection
-    # tracks parent ps (refcursor handling). this is the
-    # PreparedStatement which owns the refcursor variable(s)
     query*: cstring
-    boundParams: ParamTypeList # mixed in/out or inout
+    boundParams: ParamTypeList 
+    # holds all parameters - mixed in/out or inout
     stmtCacheKey*: cstring
     scrollable: bool # unused
     columnCount: uint32 # deprecated
     pStmt: ptr dpiStmt
+    # ODPI-C ptr to the statement
     statementInfo*: dpiStmtInfo # populated within the execute stage
+                                # TODO: eval if useable, remove otherwise
     bufferedRows*: int # refers to the maxArraySize
     # used for both reading and writing to the database 
     rsOutputCols: ParamTypeList
+    # auto-populated list for returning statements
     rsCurrRow*: int # reserved for iterating
     rsMoreRows*: bool #
-    rsBufferRowIndex*: int
-    rsRowsFetched*: int
-    rsColumnNames*: seq[string] #
+    rsBufferRowIndex*: int 
+    # ODPI-C pointer type - unused at the moment
+    rsRowsFetched*: int # stats counter
+    rsColumnNames*: seq[string] 
+    # populated on the first executeStatement
 
   ResultSet* = PreparedStatement
   # type alias
@@ -156,7 +166,7 @@ type
                           columnName: string,
                           data: ptr dpiData]
     ## contains the columnType and the datapointer to the
-    ## resultSets cell. the data can fetched with the 
+    ## resultSets cell. the data can be fetched with the 
     ## fetch-signature templates.                         
   DpiRow* = seq[DpiRowElement]
     ## contains the DpiRowElements of the current iterated row
@@ -165,6 +175,7 @@ type
   Lob* = object
     lobtype : ParamType
     lobref : ptr dpiLob
+    # TODO: implement
 
   DpiLobType* = enum CLOB = DpiOracleType.OTCLOB,
                      NCLOB = DpiOracleType.OTNCLOB,
@@ -200,7 +211,7 @@ template `[]`*(row: DpiRow, colname: string): DpiRowElement =
   rowelem
 
 template `[]`*(data: ptr dpiData, idx: int): ptr dpiData =
-  ## direct access of the cell(row) within the columnbuffer by index
+  ## direct access of a column's cell within the columnbuffer by index
   cast[ptr dpiData]((cast[int](data)) + (sizeof(dpiData)*idx))
 
 template `[]`*(rs: var ResultSet, colidx: int): ParamTypeRef =
@@ -214,6 +225,7 @@ template `[]`*(rs: ParamTypeRef, rowidx: int): ptr dpiData =
   ##
   ## further reading:
   ## https://oracle.github.io/odpi/doc/structs/dpiData.html
+  ## Remark: not all type combinations are implemented by ODPI-C
   cast[ptr dpiData]((cast[int](rs.buffer)) + (sizeof(dpiData)*rowidx))
 
 template `[]`*(rs: var PreparedStatement, bindidx: BindIdx): ParamTypeRef =
@@ -292,7 +304,7 @@ template isFailure*(result: DpiResult): bool =
   result == DpiResult.FAILURE
 
 template osql*(sql: string): SqlQuery =
-  ## template to construct a SqlQuery type
+  ## template to construct an oracle-SqlQuery type
   SqlQuery(sql.cstring)
 
 proc newOracleContext*(encoding: NlsLang, authMode: DpiAuthMode,
@@ -778,7 +790,7 @@ proc fetchNextRows*(rs: var ResultSet): DpiResult =
   ## remark: no data-copy is performed.
   ## blobs and strings (pointer types) should be copied into the application
   ## domain before calling fetchNextRows again.
-  ## value types are copied by assignment
+  ## value types are copied on assignment
   result = DpiResult.SUCCESS
   if rs.rsMoreRows:
     var moreRows: cint # out
