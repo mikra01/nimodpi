@@ -1,6 +1,7 @@
 import os
 import times
 import options
+import strformat
 import nimodpi
 
 # Copyright (c) 2019 Michael Krauter
@@ -917,7 +918,13 @@ template executeDDL*(conn: var OracleConnection,
   var pstmt: PreparedStatement
   newPreparedStatement(conn, sql, pstmt)
   withPreparedStatement(pstmt):
-    pstmt.executeStatement(rs, dpiMode)
+    discard dpiStmt_getInfo(pstmt.pStmt, pstmt.statementInfo.addr)
+    if pstmt.statementInfo.isDDL == 1:
+      pstmt.executeStatement(rs, dpiMode)
+    else:
+      raise newException(IOError, "executeDDL: " &
+        " statement is no DDL. please use executeStatement instead.")
+      {.effects.}
 
 
 when isMainModule:
@@ -1142,7 +1149,7 @@ when isMainModule:
           c1param.setString(some("test_äüö" & $i),bidx) #pk
           c2param[bidx].setInt64(varc2)
           c3param.setBytes(some(@[(0xAA+i).byte,0xBB,0xCC]),bidx)
-          setFloat(c4param[bidx],some(i.float32+0.123.float32))
+          setFloat(c4param[bidx],some(i.float32+0.12.float32))
           c5param[bidx].setDouble(some(i.float64+99.12345))
           c6param[bidx].setDateTime(some(getTime().local))
     
@@ -1155,8 +1162,11 @@ when isMainModule:
     withPreparedStatement(pstmt): 
       pstmt.executeStatement(rset)
       for row in resultSetRowIterator(rset):
+       
         echo $fetchString(row[0].data) & "  " & $fetchInt64(row[1].data) & 
-          " " & $fetchString(row[2].data) & " " & $fetchDouble(row[3].data) &
+          " " & $fetchString(row[2].data) & 
+          # " "  & $fetchFloat(row[3].data) &
+          # TODO: eval float32 vals 
           " " & $fetchDouble(row[4].data) & " " & $(fetchDateTime(row[5].data).get)
           # FIXME: fetchFloat returns wrong values
 
