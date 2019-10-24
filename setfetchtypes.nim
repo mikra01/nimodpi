@@ -180,7 +180,7 @@ template fetchString*( val : ptr dpiData ) : Option[string] =
 template fetchString*( param : ParamTypeRef) : Option[string] =
   param[0].fetchString
 
-template setString*(param : ParamTypeRef , value : Option[string], rownum : int = 0 ) = 
+template setString*(param : ParamTypeRef , rownum : int, value : Option[string]) = 
     ## bind parameter setter string type. for single parameters set the rownum
     ## to 0. 
     if value.isNone:
@@ -203,7 +203,7 @@ template fetchBytes*( val : ptr dpiData ) : Option[seq[byte]] =
 template fetchBytes*( param : ParamTypeRef ) : Option[seq[byte]] =
   param[0].fetchBytes
 
-template setBytes*(param : ParamTypeRef , value: Option[seq[byte]] , rownum : int = 0 ) = 
+template setBytes*(param : ParamTypeRef , rownum : int = 0, value: Option[seq[byte]]) = 
     ## bind parameter setter seq[byte] type. this setter operates always with index 0
     ## the value is copied into the drivers domain 
     if value.isNone:

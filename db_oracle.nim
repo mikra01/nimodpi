@@ -87,7 +87,7 @@ type
     # tracks the bindType.
     case kind*: BindInfoType
       of byPosition: paramVal*: BindIdx
-      of byName: paramName*: cstring
+      of byName: paramName*: string
 
   ParamType* = object
     ## describes how the database type is mapped onto
@@ -211,7 +211,7 @@ template `[]`*(row: DpiRow, colname: string): DpiRowElement =
       break;
   rowelem
 
-template `[]`*(data: ptr dpiData, idx: int): ptr dpiData =
+template `[]`(data: ptr dpiData, idx: int): ptr dpiData =
   ## direct access of a column's cell within the columnbuffer by index
   cast[ptr dpiData]((cast[int](data)) + (sizeof(dpiData)*idx))
 
@@ -229,32 +229,33 @@ template `[]`*(rs: ParamTypeRef, rowidx: int): ptr dpiData =
   ## Remark: not all type combinations are implemented by ODPI-C
   cast[ptr dpiData]((cast[int](rs.buffer)) + (sizeof(dpiData)*rowidx))
 
-template `[]`*(rs: var PreparedStatement, bindidx: BindIdx): ParamTypeRef =
-  # retrieves the paramType for setting the parameter value by index
-  # use the setParam templates for setting the value after that.
-  # before fetching make sure that the parameter is already created
+proc `[]`*(rs: var PreparedStatement, bindidx: BindIdx): ParamTypeRef =
+  ## retrieves the paramType for setting the parameter value by index
+  ## use the setParam templates for setting the value after that.
+  ## before fetching make sure that the parameter is already created
   for i in rs.boundParams.low .. rs.boundParams.high:
     if not rs.boundParams[i].isNil:
       if rs.boundParams[i].bindPosition.kind == byPosition:
-        if rs.boundParams[i].bindPosition.paramVal == bindidx:
+        if rs.boundParams[i].bindPosition.paramVal.int == bindidx.int:
           result = rs.boundParams[i]
-          return result
+          return
 
   raise newException(IOError, "PreparedStatement[] parameterIdx : " &
-    $bindidx & " not found!")
+    $bindidx.int & " not found!")
   {.effects.}
 
-template `[]`*(rs: var PreparedStatement, paramName: string): ParamTypeRef =
-  # retrieves the pointer for setting the parameter value by paramname
-  # before fetching make sure that the parameter is already created otherwise
-  # an IOError is thrown
+proc `[]`*(rs: var PreparedStatement, paramName: string): ParamTypeRef =
+  ## retrieves the pointer for setting the parameter value by paramname
+  ## before fetching make sure that the parameter is already created otherwise
+  ## an IOError is thrown
+  ## TODO: use map for paramNames
   for i in rs.boundParams.low .. rs.boundParams.high:
     if not rs.boundParams[i].isNil:
       if rs.boundParams[i].bindPosition.kind == byName:
         if cmp(paramName, rs.boundParams[i].bindPosition.paramName) == 0:
           result = rs.boundParams[i]
-          return result
-
+          return
+  
   raise newException(IOError, "PreparedStatement[] parameter : " &
     paramName & " not found!")
   {.effects.}
@@ -385,12 +386,14 @@ proc setDbOperationAttribute*(conn : var OracleConnection,attribute : string): D
 
 proc subscribe(conn : var OracleConnection, params : ptr dpiSubscrCreateParams,
                outSubscr : ptr ptr dpiSubscr) :  DpiResult =
-  ## creates a new subscription (notification) on databas events              
+  ## creates a new subscription (notification) on databas events
+  # TODO: test missing              
   result = DpiResult(dpiConn_subscribe(conn.connection, 
                      params,outSubscr))               
 
 proc unsubscribe(conn : var OracleConnection, subscription : ptr dpiSubscr) : DpiResult =
   ## unsubscribe the subscription
+  # TODO: test missing
   result = DpiResult(dpiConn_unsubscribe(conn.connection,subscription))
 
 
@@ -492,7 +495,7 @@ proc addBindParameter(ps: var PreparedStatement,
 
 proc addBindParameter*(ps: var PreparedStatement,
                          coltype: ColumnType,
-                         paramName: string): ParamTypeRef =
+                         paramName: string) : ParamTypeRef =
   ## constructs a non-array bindparameter by parameterName.
   ## throws IOException in case of error.
   ## see https://oracle.github.io/odpi/doc/user_guide/data_types.html
@@ -508,7 +511,7 @@ proc addBindParameter*(ps: var PreparedStatement,
 
 proc addBindParameter*(ps: var PreparedStatement,
                          coltype: ColumnType,
-                         idx: BindIdx): ParamTypeRef =
+                         idx: BindIdx) : ParamTypeRef =
   ## constructs a non-array bindparameter by parameter index.
   ## throws IOException in case of error.
   ## see https://oracle.github.io/odpi/doc/user_guide/data_types.html
@@ -526,7 +529,7 @@ proc addArrayBindParameter*(ps: var PreparedStatement,
                        coltype: ColumnType,
                        paramName: string,
                        rowCount : int, 
-                       isPlSqlArray : bool = false): ParamTypeRef =
+                       isPlSqlArray : bool = false) : ParamTypeRef =
   ## constructs an array bindparameter by parameterName.
   ## array parameters are used for bulk-insert or plsql-array-handling
   ## throws IOException in case of error.
@@ -679,45 +682,68 @@ proc executeAndInitResultSet(prepStmt: var PreparedStatement,
                           # of the prepared statement
         addOutColumn(prepStmt, prepStmt.rsOutputCols[i-1])
 
-
-proc openRefCursor*(ps: PreparedStatement, param: ParamTypeRef,
-                    outRefCursor: var ResultSet,
-                    bufferedRows: int,
-                    dpiMode: uint32 = DpiModeExec.DEFAULTMODE.ord) =
-  ## opens the refcursor on the specified bind parameter.
-  ## executeStatement must be called before open it.
-  ## throws IOError in case of an error
-
+template openRefCursor(ps : PreparedStatement, 
+                       p : ParamTypeRef,
+                       outRefCursor : var ResultSet,
+                       bufferedRows : int,
+                       dpiMode: uint32 = DpiModeExec.DEFAULTMODE.ord) =
   if param.isFetched:
     # quirky
     raise newException(IOError, "openRefCursor: " &
-      """ reexecute of the preparedStatement with refCursor not supported """)
+       """ reexecute of the preparedStatement with refCursor not supported """)
     {.effects.}
-
+                    
   if param.columnType.nativeType == DpiNativeCType.STMT and
     param.columnType.dbType == DpiOracleType.OTSTMT:
     param.isFetched = true
     outRefCursor.pstmt = param[0].fetchRefCursor
     outRefCursor.relatedConn = ps.relatedConn
     outRefCursor.bufferedRows = bufferedRows
+  
     if DpiResult(executeAndInitResultSet(outRefCursor,
-                                             dpiMode,
-                                             true)).isFailure:
+                                       dpiMode,
+                                       true)).isFailure:
       raise newException(IOError, "openRefCursor: " &
-       getErrstr(outRefCursor.relatedConn.context))
-    {.effects.}
+        getErrstr(outRefCursor.relatedConn.context))
+      {.effects.}
+  
   else:
     raise newException(IOError, "openRefCursor: " &
       """ bound parameter has not the required
           DpiNativeCType.STMT/DpiOracleType.OTSTMT 
           combination """)
     {.effects.}
+                    
 
-proc closeRefCursor*(rs: var ResultSet) =
-  ## releases refCursors output-binds
-  for i in rs.rsOutputCols.low .. rs.rsOutputCols.high:
-    discard dpiVar_release(rs.rsOutputCols[i].paramVar)
-  rs.rsOutputCols.setLen(0)
+proc openRefCursor*(ps: var PreparedStatement, idx : BindIdx,
+                    outRefCursor: var ResultSet,
+                    bufferedRows: int,
+                    dpiMode: uint32 = DpiModeExec.DEFAULTMODE.ord) =
+  ## opens the refcursor on the specified bind parameter.
+  ## executeStatement must be called before open it.
+  ## throws IOError in case of an error
+  let param : ParamTypeRef = ps[idx.BindIdx]
+  openRefCursor(ps,param,outRefCursor,bufferedRows,dpiMode)
+
+proc openRefCursor*(ps: var PreparedStatement, 
+                      paramName : string,
+                      outRefCursor: var ResultSet,
+                      bufferedRows: int,
+                      dpiMode: uint32 = DpiModeExec.DEFAULTMODE.ord) =
+  ## opens the refcursor on the specified bind parameter.
+  ## executeStatement must be called before open it.
+  ## throws IOError in case of an error
+  let param = ps[paramName]
+  openRefCursor(ps,param,outRefCursor,bufferedRows,dpiMode)
+
+
+# proc closeRefCursor*(rs: var ResultSet) =
+# deprecated. binds are release on destroy or by the preparedStatement
+# with-template
+#  ## releases refCursors output-binds
+#  for i in rs.rsOutputCols.low .. rs.rsOutputCols.high:
+#    discard dpiVar_release(rs.rsOutputCols[i].paramVar)
+#  rs.rsOutputCols.setLen(0)
 
 proc executeStatement*(prepStmt: var PreparedStatement,
   numRows: int,
@@ -727,7 +753,8 @@ proc executeStatement*(prepStmt: var PreparedStatement,
   discard
   # TODO: implement
 
-proc updateBindParams(prepStmt: var PreparedStatement, rowBufferSize : int) = 
+proc updateBindParams(prepStmt: var PreparedStatement, rowBufferSize : int) =
+  # reread the params for reexecution of the prepared statement 
   for i in prepStmt.boundParams.low .. prepStmt.boundParams.high:
     let bp = prepStmt.boundParams[i]
     if rowBufferSize > 1:
@@ -894,13 +921,6 @@ template withTransaction*(dbconn: OracleConnection, rc: var DpiResult,
       rc = DpiResult(dpiConn_rollback(dbconn.connection))
       raise
 
-template withRefCursor*(rs: var ResultSet, body: untyped) =
-  ## releases the bound refCursor output parameters after leaving
-  ## the block.
-  try:
-    body
-  finally:
-    rs.closeRefCursor
 
 template withPreparedStatement*(ps: var PreparedStatement, body: untyped) =
   ## releases the preparedStatement after leaving
@@ -1053,35 +1073,31 @@ when isMainModule:
     # and the snd is parameterised.
 
     withPreparedStatement(pstmt):
-      let rc1 = pstmt.addBindParameter(RefCursorColumnTypeParam,
-                                         BindIdx(1))
+      discard pstmt.addBindParameter(RefCursorColumnTypeParam,BindIdx(1))
       # to consume the refcursor a bindParameter is needed                                   
-      let param2 = pstmt.addBindParameter(RefCursorColumnTypeParam,
-                                         BindIdx(2))
-      let deptId = pstmt.addBindParameter(Int64ColumnTypeParam,
-                                         BindIdx(3))
+      discard pstmt.addBindParameter(RefCursorColumnTypeParam,BindIdx(2))
+      discard pstmt.addBindParameter(Int64ColumnTypeParam,BindIdx(3))
       # filter: parameter for department_id                                   
-      deptId.setInt64(some(80.int64))
+      pstmt[3.BindIdx].setInt64(some(80.int64))
 
       pstmt.executeStatement(rs)
 
       echo "refCursor 1 results: "
       var refc: ResultSet
 
-      pstmt.openRefCursor(rc1, refc, 1, DpiModeExec.DEFAULTMODE.ord)
+      pstmt.openRefCursor(1.BindIdx, refc, 1, DpiModeExec.DEFAULTMODE.ord)
       # opens the refcursor. once consumed it can't be reopended (TODO: check
       # if that's a ODPI-C limitation)
-      withRefCursor(refc):  # auto-cleanup of internal resources
-        for row in resultSetRowIterator(refc):
-          echo $fetchString(row[0].data)
+      for row in resultSetRowIterator(refc):
+        echo $fetchString(row[0].data)
 
       echo "refCursor 2 results: filter with department_id = 80 "
+  
+      var refc2 : ResultSet
+      pstmt.openRefCursor(2.BindIdx, refc2, 10, DpiModeExec.DEFAULTMODE.ord)
 
-      pstmt.openRefCursor(param2, refc, 10, DpiModeExec.DEFAULTMODE.ord)
-
-      withRefCursor(refc): # auto-cleanup of internal resources
-        for row in resultSetRowIterator(refc):
-          echo $fetchString(row[0].data) & " " & $fetchString(row[1].data)
+      for row in resultSetRowIterator(refc2):
+        echo $fetchString(row[0].data) & " " & $fetchString(row[1].data)
 
       var ctableq = osql""" CREATE TABLE HR.DEMOTESTTABLE(
                                 C1 VARCHAR2(20) NOT NULL 
@@ -1110,24 +1126,26 @@ when isMainModule:
     # bulk insert example. 55 rows are inserted with a buffer
     # window of 10 rows
 
-    let c1param = pstmt.addArrayBindParameter(newStringColTypeParam(20),
+    discard pstmt.addArrayBindParameter(newStringColTypeParam(20),
                      BindIdx(1), 10)
-    let c2param = pstmt.addArrayBindParameter(Int64ColumnTypeParam,
+    discard pstmt.addArrayBindParameter(Int64ColumnTypeParam,
                                           BindIdx(2), 10)
-    let c3param = pstmt.addArrayBindParameter(newRawColTypeParam(5),
+    discard pstmt.addArrayBindParameter(newRawColTypeParam(5),
                      3.BindIdx,10)
-    let c4param = pstmt.addArrayBindParameter((DpiNativeCType.FLOAT,
+    discard pstmt.addArrayBindParameter((DpiNativeCType.FLOAT,
                                           DpiOracleType.OTNATIVE_FLOAT,
                                           1,false,0),
                      4.BindIdx,10)                  
-    let c5param = pstmt.addArrayBindParameter((DpiNativeCType.DOUBLE,
+    discard pstmt.addArrayBindParameter((DpiNativeCType.DOUBLE,
                                           DpiOracleType.OTNUMBER,
                                           1,false,0),
                       5.BindIdx,10)                  
-    let c6param = pstmt.addArrayBindParameter((DpiNativeCType.TIMESTAMP,
+    discard pstmt.addArrayBindParameter((DpiNativeCType.TIMESTAMP,
                                           DpiOracleType.OTTIMESTAMP_TZ,
                                           1,false,0),
-                       6.BindIdx,10)                  
+                       6.BindIdx,10)
+    # TODO: add the params to the prepared Statement
+
     # if a nativeType/oracleType combination is not implemented by ODPI-C
     # you will receive an exception here
    
@@ -1135,9 +1153,11 @@ when isMainModule:
     var result: DpiResult
 
     conn.withTransaction(result): # commit after this block
+     # TODO: drop DpiResult for the transaction (do not expose to public api)
       withPreparedStatement(pstmt): # cleanup of preparedStatement
         var varc2 : Option[int64]
         for i,bidx in pstmt.bulkBindIterator(rset,55,9):
+          # i: complete counter, bidx: window index
           # convenience iterator. if the window is filled
           # contents are flushed to the database.
           if i == 9:
@@ -1145,13 +1165,13 @@ when isMainModule:
           else:
             varc2 = some(i.int64)
           # unfortunately setString/setBytes have a different
-          # API than the value-parameter types  
-          c1param.setString(some("test_äüö" & $i),bidx) #pk
-          c2param[bidx].setInt64(varc2)
-          c3param.setBytes(some(@[(0xAA+i).byte,0xBB,0xCC]),bidx)
-          setFloat(c4param[bidx],some(i.float32+0.12.float32))
-          c5param[bidx].setDouble(some(i.float64+99.12345))
-          c6param[bidx].setDateTime(some(getTime().local))
+          # API than the value-parameter types
+          pstmt[1.BindIdx].setString(bidx,some("test_äüö" & $i)) #pk
+          pstmt[2.BindIdx][bidx].setInt64(varc2)
+          pstmt[3.BindIdx].setBytes(bidx,some(@[(0xAA+i).byte,0xBB,0xCC]))
+          pstmt[4.BindIdx][bidx].setFloat(some(i.float32+0.12.float32))
+          pstmt[5.BindIdx][bidx].setDouble(some(i.float64+99.12345))
+          pstmt[6.BindIdx][bidx].setDateTime(some(getTime().local))
     
     var selectStmt: SqlQuery = osql"select c1,c2,rawtohex(c3) as c3,c4,c5,c6 from hr.demotesttable"
     # read now the committed stuff
