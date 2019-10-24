@@ -8,17 +8,21 @@ Oracle ODPI-C wrapper for Nim
 - nimterop 
 
 ### how to install
-just import "db_oracle" within your project. 
-the dependent ODPI-C source is directly imported into your project (via nimterop) 
+clone this project directly or use "nimble install nimodpi".
+then import "db_oracle" within your project. 
+the dependent ODPI-C source is directly included into your project (via nimterop) 
+
 See the "isMainModule" section at the end of the module for some examples.
 
 Besides the abstraction layer you can also consume the raw API if something is
 missing ( or PR me your solution ).
+
 See /demo/demo.nim for some direct ODPI-C examples. 
 The subdir /demo also contains an example how sqlplus could be utilised for script execution.
 
 ### Remarks
-I tested it only for the IA64 architecture.
+I tested it only for the IA64 architecture and only tested against
+nim-compiler version 1.0.2. 
 The API could be subject of change.
 
 ### Oracle XE installation
