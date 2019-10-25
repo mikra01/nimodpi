@@ -107,7 +107,7 @@ type
     isFetched: bool
     # flag used for refcursor reexecute prevention.
     # if a refcursor is within the statement it can't be reused
-
+ 
   ParamTypeRef* = ref ParamType
     ## handle to the param type
 
@@ -159,7 +159,8 @@ type
     pStmt: ptr dpiStmt
     # ODPI-C ptr to the statement
     statementInfo*: dpiStmtInfo # populated within the execute stage
-                                # TODO: eval if useable, remove otherwise
+    # used to allocate new vars for plsql
+    # type params
     bufferedRows*: int # refers to the maxArraySize
     # used for both reading and writing to the database 
     rsOutputCols: ParamTypeList
@@ -329,10 +330,11 @@ proc newOracleContext*(encoding: NlsLang, authMode: DpiAuthMode,
         outCtx.connectionParams.addr)
     outCtx.connectionParams.authMode = authMode.ord.uint32
     outCtx.commonParams.encoding = encoding.cstring
+    outCtx.commonParams.createMode = DPI_MODE_CREATE_THREADED
   else:
     raise newException(IOError, "newOracleContext: " &
       $ei )
-    {.effects.}
+    {.effects.} 
 
 template getErrstr*(ocontext: var OracleContext): string =
   ## checks if the last operation results with error or not
@@ -455,6 +457,14 @@ proc newPreparedStatement*(conn: var OracleConnection,
   ## convenience template to construct a preparedStatement
   ## for ddl
   newPreparedStatement(conn, query, outPs, 1, stmtCacheKey)
+
+
+template releaseParameter(ps : var PreparedStatement, param : ParamTypeRef) =
+  if DpiResult(dpiVar_release(param.paramVar)).isFailure:
+    raise newException(IOError, " releaseParameter: " &
+    "error while calling dpiVar_release : " & getErrstr(
+        ps.relatedConn.context))
+    {.effects.}
 
 template bindParameter(ps: var PreparedStatement, param: ParamTypeRef) =
   # internal template to create a new in/out/inout binding variable
@@ -1245,9 +1255,10 @@ when isMainModule:
   # :4 out variable type varchar2
   var callFunc : PreparedStatement
   var callFuncResult : ResultSet
-  newPreparedStatement(conn,demoCallFunc,callFunc, 1)
+  newPreparedStatement(conn,demoCallFunc,callFunc)
   
-  withPreparedStatement(callFunc): 
+  withPreparedStatement(callFunc):
+    # call the function with direct parameter access 
     let param1 = callFunc.addBindParameter(newStringColTypeParam(50),BindIdx(1))
     let param2 = callFunc.addBindParameter(newStringColTypeParam(20),BindIdx(2))
     let param3 = callFunc.addBindParameter(newStringColTypeParam(20),BindIdx(3))
@@ -1256,32 +1267,20 @@ when isMainModule:
     param2.setString(0,some("teststr äüö")) 
     param3.setString(0,some("p2"))
     callFunc.executeStatement(callFuncResult) 
-    
     var r1 = param1.fetchString()
+    # fetch functions result
     var r3 = param3.fetchString()
+    # fetch functions inout var
     var r4 = param4.fetchString()
-    echo "results 1st run:"
+    # fetch functions out var
+
     echo "param :1 (result) = " & r1.get
     if r3.isSome:
       echo "param :3 (inout) = " & r3.get
-
     echo "param :4 (out) = " & r4.get
-
-    # reexecute
-    param3.setString(0,some("2nd_run")) 
-    # FIXME: issue: param3 called with value from the first run
-    callFunc.executeStatement(callFuncResult) 
-    echo "results snd run: "   
-    echo "param :1 (result) = " & r1.get
-    echo "param :3 (inout) = " & r3.get
-    echo "param :4 (out) = " & r4.get
-
-
-
 
   var cleanupDemo : SqlQuery = osql" drop function hr.demo_inout "
   conn.executeDDL(cleanupDemo)
-
 
   conn.releaseConnection
   destroyOracleContext(octx)
