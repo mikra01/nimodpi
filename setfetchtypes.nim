@@ -251,6 +251,7 @@ template fetchRefCursor*(param : ptr dpiData ) : ptr dpiStmt =
   
 
 template setLob*(param : ptr dpiLob, value : Option[seq[byte]] , rownum : int = 0) =
+  # use: int dpiVar_setFromLob(dpiVar *var, uint32_t pos, dpiLob *lob)
   discard
 
 template getLob*(param : ptr dpiLob ) : Option[seq[byte]]  =

@@ -91,7 +91,7 @@ type
 
   ParamType* = object
     ## describes how the database type is mapped onto
-    ## the database type.
+    ## the query
     bindPosition*: BindInfo
     # bind position and type -> rename 2 bindinfo
     queryInfo: dpiQueryInfo
@@ -123,12 +123,24 @@ type
 
 const
   RefCursorColumnTypeParam* = (DpiNativeCType.STMT,
-                                   DpiOracleType.OTSTMT,
-                                   1, false, 1)
-  ## predefined paramter for refcursor                                 
+                               DpiOracleType.OTSTMT,
+                               1, false, 1)
+  ## predefined parameter for refcursor                                 
   Int64ColumnTypeParam* = (DpiNativeCType.INT64,
-                                DpiOracleType.OTNUMBER,
-                                1, false, 1)
+                           DpiOracleType.OTNUMBER,
+                           1, false, 1)
+  FloatColumnTypeParam* = (DpiNativeCType.FLOAT,
+                           DpiOracleType.OTNATIVE_FLOAT,
+                           1,false,0)
+
+  DoubleColumnTypeParam* = ( DpiNativeCType.DOUBLE,
+                           DpiOracleType.OTNATIVE_DOUBLE,
+                           1,false,0)
+
+  ZonedTimestampTypeParam* = (DpiNativeCType.TIMESTAMP,
+                            DpiOracleType.OTTIMESTAMP_TZ,
+                            1,false,0)                         
+
   ## predefined Int64 Type                              
   # TODO: use dpiStmt_executeMany for bulk binds
 type
@@ -175,8 +187,8 @@ type
 
   Lob* = object
     lobtype : ParamType
+    chunkSize : uint32
     lobref : ptr dpiLob
-    # TODO: implement
 
   DpiLobType* = enum CLOB = DpiOracleType.OTCLOB,
                      NCLOB = DpiOracleType.OTNCLOB,
@@ -184,15 +196,7 @@ type
                 
 include odpi_obj2string
 include odpi_to_nimtype
-
-proc newTempLob*( conn : OracleConnection, 
-                  lobtype : DpiLobType, 
-                  outlob : var Lob ) : DpiResult = 
-  ## creates a new temp lob
-  result = DpiResult(dpiConn_newTempLob(conn.connection,
-                      lobtype.ord.dpiOracleTypeNum,
-                      addr(outlob.lobref)))
-
+                  
 template newStringColTypeParam(strlen: int): ColumnType =
   ## helper to construct a string ColumnType with specified len
   (DpiNativeCType.BYTES, DpiOracleType.OTVARCHAR, strlen, false, 0)
@@ -272,10 +276,8 @@ template setNotDbNull*(val: ptr dpiData) =
   ## sets value present
   val.isNull = 0.cint
 
-
 include setfetchtypes
   # includes all fetch/set templates
-
 
 template getColumnCount*(rs: var ResultSet): int =
   ## returns the number of columns for the ResultSet
@@ -311,17 +313,16 @@ template osql*(sql: string): SqlQuery =
 
 proc newOracleContext*(encoding: NlsLang, authMode: DpiAuthMode,
                        outCtx: var OracleContext,
-                           outMsg: var string): DpiResult =
+                           outMsg: var string) =
   ## constructs a new OracleContext needed to access the database.
   ## if DpiResult.SUCCESS is returned the outCtx is populated.
   ## In case of an error outMsg
   ## contains the error message.
   var ei: dpiErrorInfo
-  result = DpiResult(
+  if DpiResult(
        dpiContext_create(DPI_MAJOR_VERSION, DPI_MINOR_VERSION, addr(
        outCtx.oracleContext), ei.addr)
-    )
-  if result.isSuccess:
+    ).isSuccess:
     discard dpiContext_initCommonCreateParams(outCtx.oracleContext,
         outCtx.commonParams.addr)
     discard dpiContext_initConnCreateParams(outCtx.oracleContext,
@@ -330,21 +331,23 @@ proc newOracleContext*(encoding: NlsLang, authMode: DpiAuthMode,
     outCtx.commonParams.encoding = encoding.cstring
   else:
     raise newException(IOError, "newOracleContext: " &
-      $ei)
+      $ei )
     {.effects.}
-
-
-proc destroyOracleContext*(ocontext: var OracleContext): DpiResult =
-  ## destroys the present oracle context. the resultcode of this operation could
-  ## be checked with hasError
-  # TODO: evaluate what happens if there are open connections present
-  result = DpiResult(dpiContext_destroy(ocontext.oracleContext))
 
 template getErrstr*(ocontext: var OracleContext): string =
   ## checks if the last operation results with error or not
   var ei: dpiErrorInfo
   dpiContext_getError(ocontext.oracleContext, ei.addr)
   $ei
+    
+proc destroyOracleContext*(ocontext: var OracleContext) =
+  ## destroys the present oracle context. the resultcode of this operation could
+  ## be checked with hasError
+  # TODO: evaluate what happens if there are open connections present
+  if DpiResult(dpiContext_destroy(ocontext.oracleContext)).isFailure:
+    raise newException(IOError, "newOracleContext: " &
+      getErrstr(ocontext))
+    {.effects.}
 
 proc createConnection*(octx: var OracleContext,
                          connectstring: string,
@@ -370,35 +373,50 @@ proc createConnection*(octx: var OracleContext,
       getErrstr(octx))
     {.effects.}
 
-proc releaseConnection*(conn: var OracleConnection): DpiResult =
+proc releaseConnection*(conn: var OracleConnection) =
   ## releases the connection
-  result = DpiResult(dpiConn_release(conn.connection))
-
-proc terminateExecution*(conn : var OracleConnection) : DpiResult =
+  if DpiResult(dpiConn_release(conn.connection)).isFailure:
+    raise newException(IOError, "createConnection: " &
+      getErrstr(conn.context))
+    {.effects.}
+ 
+proc terminateExecution*(conn : var OracleConnection)  =
   ## terminates any running/pending execution on the server
   ## associated to the given connection
-  result = DpiResult(dpiConn_breakExecution(conn.connection))
+  if DpiResult(dpiConn_breakExecution(conn.connection)).isFailure:
+    raise newException(IOError, "terminateExecution: " &
+      getErrstr(conn.context))
+    {.effects.}
 
-proc setDbOperationAttribute*(conn : var OracleConnection,attribute : string): DpiResult =
+proc setDbOperationAttribute*(conn : var OracleConnection,attribute : string) =
   ## end to end tracing for auditTrails and Enterprise Manager
-  result = DpiResult(dpiConn_setDbOp(conn.connection, 
-                             $(attribute.cstring),attribute.len.uint32))
-
-proc subscribe(conn : var OracleConnection, params : ptr dpiSubscrCreateParams,
-               outSubscr : ptr ptr dpiSubscr) :  DpiResult =
+  if DpiResult(dpiConn_setDbOp(conn.connection, 
+               $(attribute.cstring),attribute.len.uint32)).isFailure:
+    raise newException(IOError, "setDbOperationAttribute: " &
+      getErrstr(conn.context))
+    {.effects.}
+          
+proc subscribe(conn : var OracleConnection, 
+               params : ptr dpiSubscrCreateParams,
+               outSubscr : ptr ptr dpiSubscr)  =
   ## creates a new subscription (notification) on databas events
   # TODO: test missing              
-  result = DpiResult(dpiConn_subscribe(conn.connection, 
-                     params,outSubscr))               
-
-proc unsubscribe(conn : var OracleConnection, subscription : ptr dpiSubscr) : DpiResult =
+  if DpiResult(dpiConn_subscribe(conn.connection, 
+                     params,outSubscr)).isFailure:
+    raise newException(IOError, "subscribe: " &
+      getErrstr(conn.context))
+    {.effects.}
+                
+proc unsubscribe(conn : var OracleConnection, subscription : ptr dpiSubscr) =
   ## unsubscribe the subscription
   # TODO: test missing
-  result = DpiResult(dpiConn_unsubscribe(conn.connection,subscription))
-
-
+  if DpiResult(dpiConn_unsubscribe(conn.connection,subscription)).isFailure:
+    raise newException(IOError, "unsubscribe: " &
+      getErrstr(conn.context))
+    {.effects.}
+    
 proc newPreparedStatement*(conn: var OracleConnection,
-                           query: SqlQuery,
+                           query: var SqlQuery,
                            outPs: var PreparedStatement,
                            bufferedRows: int,
                            stmtCacheKey: string = "") =
@@ -430,7 +448,7 @@ proc newPreparedStatement*(conn: var OracleConnection,
       getErrstr(conn.context))
     {.effects.}
 
-template newPreparedStatement*(conn: var OracleConnection,
+proc newPreparedStatement*(conn: var OracleConnection,
     query: var SqlQuery,
     outPs: var PreparedStatement,
     stmtCacheKey: string = "") =
@@ -604,17 +622,10 @@ proc destroy*(prepStmt: var PreparedStatement) =
   prepStmt.rsOutputCols.setLen(0)
   discard dpiStmt_release(prepStmt.pStmt)
 
-template executeMany(prepStmt: PreparedStatement,
-                 dpiMode: uint32 =
-                   DpiModeExec.DEFAULTMODE.ord): DpiResult =
-  ## bulk insert - no results are fetched
-  DpiResult(dpiStmt_executeMany(prepStmt.pStmt,
-                                         dpimode,
-                                         prepStmt.bufferedRows.uint32))
-
+                              
 proc executeAndInitResultSet(prepStmt: var PreparedStatement,
                          dpiMode: uint32 = DpiModeExec.DEFAULTMODE.ord,
-                         isRefCursor: bool = false): DpiResult =
+                         isRefCursor: bool = false) =
   # internal proc. initialises the derived ResultSet
   # from the given preparedStatement by calling execute on it
   # TODO: reset() needed
@@ -624,48 +635,54 @@ proc executeAndInitResultSet(prepStmt: var PreparedStatement,
   if not isRefCursor:
   # TODO: get rid of quirky isRefCursor flag
     if prepStmt.boundParams.len > 0 and
-       prepStmt.boundParams[0].rowBufferSize > 1:
-      result = executeMany(prepStmt, dpiMode)
+         prepStmt.boundParams[0].rowBufferSize > 1:
+      ## bulk insert - no results are fetched
+      if DpiResult(dpiStmt_executeMany(prepStmt.pStmt,
+                                       dpimode,
+                                       prepStmt.bufferedRows.
+                                         uint32)).isFailure:
+        raise newException(IOError, "executeMany: " &
+          getErrstr(prepStmt.relatedConn.context))
+        {.effects.}
     else:
-      result = DpiResult(dpiStmt_execute(prepStmt.pStmt,
-                                       dpiMode,
-                                       prepStmt.columnCount.addr
-        )
-      )
+      if DpiResult(
+           dpiStmt_execute(prepStmt.pStmt,
+                           dpiMode,
+                           prepStmt.columnCount.addr)
+                  ).isFailure:
+        raise newException(IOError, "executeAndInitResultSet: " &
+                getErrstr(prepStmt.relatedConn.context))
+        {.effects.}              
   else:
-    result = DpiResult.SUCCESS
     discard dpiStmt_getNumQueryColumns(prepStmt.pStmt,
         prepStmt.columnCount.addr)
     if DpiResult(
            dpiStmt_setFetchArraySize(prepStmt.pStmt,
                                      prepStmt.bufferedRows.uint32)
       ).isFailure:
-      raise newException(IOError, "newPreparedStatement: " &
+      raise newException(IOError, "executeAndInitResultSet(refcursor): " &
         getErrstr(prepStmt.relatedConn.context))
       {.effects.}
 
+  if prepStmt.rsOutputCols.len <= 0:
+    # create the needed buffercolumns(resultset) automatically
+    # only once
+    prepStmt.rsOutputCols = newParamTypeList(prepStmt.columnCount.int)
+    prepStmt.rsColumnNames = newSeq[string](prepStmt.columnCount.int)
+    discard dpiStmt_getInfo(prepStmt.pStmt, prepStmt.statementInfo.addr)
 
-  if result.isSuccess:
-    if prepStmt.rsOutputCols.len <= 0:
-      # create the needed buffercolumns(resultset) automatically
-      # only once
-      prepStmt.rsOutputCols = newParamTypeList(prepStmt.columnCount.int)
-      prepStmt.rsColumnNames = newSeq[string](prepStmt.columnCount.int)
-      discard dpiStmt_getInfo(prepStmt.pStmt, prepStmt.statementInfo.addr)
+    var qInfo: dpiQueryInfo
+    for i in countup(1, prepStmt.columnCount.int):
+      # extract needed params out of the metadata
+      # the columnindex starts with 1
+      # TODO: if a type is not supported by ODPI-C
+      # log error within the ParamType
+      discard dpiStmt_getQueryInfo(prepStmt.pStmt, i.uint32, qInfo.addr)
+      var colname = newString(qInfo.nameLength)
+      copyMem(addr(colname[0]), qInfo.name.ptr, colname.len)
 
-      # if not prepStmt.statementInfo.isDDL == 1.cint:
-      var qInfo: dpiQueryInfo
-      for i in countup(1, prepStmt.columnCount.int):
-        # extract needed params out of the metadata
-        # the columnindex starts with 1
-        # TODO: if a type is not supported by ODPI-C
-        # log error within the ParamType
-        discard dpiStmt_getQueryInfo(prepStmt.pStmt, i.uint32, qInfo.addr)
-        var colname = newString(qInfo.nameLength)
-        copyMem(addr(colname[0]), qInfo.name.ptr, colname.len)
-
-        prepStmt.rsColumnNames[i-1] = colname
-        prepStmt.rsOutputCols[i-1] = ParamTypeRef(
+      prepStmt.rsColumnNames[i-1] = colname
+      prepStmt.rsOutputCols[i-1] = ParamTypeRef(
                           bindPosition: BindInfo(kind: BindInfoType.byPosition,
                                                paramVal: BindIdx(i)),
                           queryInfo: qInfo,
@@ -680,7 +697,7 @@ proc executeAndInitResultSet(prepStmt: var PreparedStatement,
                           rowBufferSize: prepStmt.bufferedRows)
                           # each out-resultset param owns the rowbuffersize
                           # of the prepared statement
-        addOutColumn(prepStmt, prepStmt.rsOutputCols[i-1])
+      addOutColumn(prepStmt, prepStmt.rsOutputCols[i-1])
 
 template openRefCursor(ps : PreparedStatement, 
                        p : ParamTypeRef,
@@ -700,12 +717,7 @@ template openRefCursor(ps : PreparedStatement,
     outRefCursor.relatedConn = ps.relatedConn
     outRefCursor.bufferedRows = bufferedRows
   
-    if DpiResult(executeAndInitResultSet(outRefCursor,
-                                       dpiMode,
-                                       true)).isFailure:
-      raise newException(IOError, "openRefCursor: " &
-        getErrstr(outRefCursor.relatedConn.context))
-      {.effects.}
+    executeAndInitResultSet(outRefCursor,dpiMode,true)
   
   else:
     raise newException(IOError, "openRefCursor: " &
@@ -777,7 +789,7 @@ proc updateBindParams(prepStmt: var PreparedStatement, rowBufferSize : int) =
                                      bp.bindPosition.paramName.len.uint32,
                                      bp.paramVar
         )
-      ) == DpiResult.FAILURE:
+      ).isFailure:
         raise newException(IOError, "bindArrayParams: " &
                          $bp.bindPosition.paramName &
                            getErrstr(prepStmt.relatedConn.context))
@@ -796,15 +808,11 @@ proc executeStatement*(prepStmt: var PreparedStatement,
   if prepStmt.boundParams.len > 0:
     updateBindParams(prepStmt,prepStmt.bufferedRows)
     # FIXME: track the number of rows within the statement, not the param
-  if DpiResult(prepStmt.executeAndInitResultSet(dpiMode, false)).isFailure:
-    raise newException(IOError, "executeStatement/initResultSet: " &
-                         getErrstr(prepStmt.relatedConn.context))
-    {.effects.}
 
+  prepStmt.executeAndInitResultSet(dpiMode, false)
   outRs = cast[ResultSet](prepStmt)
 
-
-proc fetchNextRows*(rs: var ResultSet): DpiResult =
+proc fetchNextRows*(rs: var ResultSet) =
   ## fetches next rows (if present) into the internal buffer.
   ## if DpiResult.FAILURE is returned the internal error could be retrieved
   ## by calling getErrstr on the context.
@@ -819,21 +827,24 @@ proc fetchNextRows*(rs: var ResultSet): DpiResult =
   ## blobs and strings (pointer types) should be copied into the application
   ## domain before calling fetchNextRows again.
   ## value types are copied on assignment
-  result = DpiResult.SUCCESS
   if rs.rsMoreRows:
     var moreRows: cint # out
     var bufferRowIndex: uint32 # out
     var rowsFetched: uint32 #out
 
-    result = DpiResult(dpiStmt_fetchRows(rs.pStmt,
-                                         rs.bufferedRows.uint32,
-                                         bufferRowIndex.addr,
-                                         rowsFetched.addr,
-                                        moreRows.addr))
-    if result.isSuccess:
+    if DpiResult(dpiStmt_fetchRows(rs.pStmt,
+                                   rs.bufferedRows.uint32,
+                                   bufferRowIndex.addr,
+                                   rowsFetched.addr,
+                                   moreRows.addr)).isSuccess:
       rs.rsMoreRows = moreRows.bool
       rs.rsBufferRowIndex = bufferRowIndex.int
       rs.rsRowsFetched = rowsFetched.int
+    else:
+      raise newException(IOError, "fetchNextRows: " &
+        getErrstr(rs.relatedConn.context))
+      {.effects.}
+  
 
 iterator columnTypesIterator*(rs : var ResultSet) : tuple[idx : int, ct: ColumnType] = 
   ## iterates over the resultSets columnTypes if present
@@ -854,10 +865,8 @@ iterator resultSetRowIterator*(rs: var ResultSet): DpiRow =
   rs.rsCurrRow = 0
   rs.rsRowsFetched = 0
 
-  if fetchNextRows(rs).isFailure:
-    raise newException(IOError, "resultSetRowIterator: " &
-        getErrstr(rs.relatedConn.context))
-    {.effects.}
+  fetchNextRows(rs)
+  
   while rs.rsCurrRow < rs.rsRowsFetched:
     for i in rs.rsOutputCols.low .. rs.rsOutputCols.high:
       p[i] = (columnType: paramtypes[i],
@@ -867,18 +876,15 @@ iterator resultSetRowIterator*(rs: var ResultSet): DpiRow =
     yield p
     inc rs.rsCurrRow
     if rs.rsCurrRow == rs.rsRowsFetched and rs.rsMoreRows:
-      if fetchNextRows(rs).isFailure:
-        raise newException(IOError, "resultSetRowIterator: " &
-          getErrstr(rs.relatedConn.context))
-        {.effects.}
+      fetchNextRows(rs)
       rs.rsCurrRow = 0
 
 iterator bulkBindIterator*(pstmt: var PreparedStatement,
                            rs: var ResultSet,
                            maxRows : int,
                            maxRowBufferIdx : int): 
-                                    tuple[rowcounter:int,
-                                          buffercounter:int] =
+                              tuple[rowcounter:int,
+                                    buffercounter:int] =
   ## convenience iterator for bulk binding.
   ## it will countup to maxRows but will return the next
   ## index of the rowBuffer. maxRowBufferIdx is the high watermark.
@@ -888,23 +894,30 @@ iterator bulkBindIterator*(pstmt: var PreparedStatement,
     raise newException(IOError,"bulkBindIterator: " &
       "constraint maxRows < maxRowBufferIdx violated " )
     {.effects.}  
+
   var rowBufferIdx = 0.int
+  
   for i in countup(0,maxRows):
     yield (rowcounter:i,buffercounter:rowBufferIdx)
     if rowBufferIdx == maxRowBufferIdx:
       # if high watermark reached flush the buffer
-      # and reset the buffer counter
+      # to db and reset the buffer counter
       pstmt.executeStatement(rs)
       rowBufferIdx = 0
     else:
       inc rowBufferIdx                     
+  
   if rowBufferIdx > 0:
     # rows iterator finished but unsent data within buffer
     updateBindParams(pstmt,rowBufferIdx)
-    discard executeMany(pstmt,DpiModeExec.DEFAULTMODE.ord) 
-    # hack
+    if DpiResult(dpiStmt_executeMany(pstmt.pStmt,
+                                    DpiModeExec.DEFAULTMODE.ord,
+                                    pstmt.bufferedRows.uint32)).isFailure:
+      raise newException(IOError, "executeMany: " &
+        getErrstr(pstmt.relatedConn.context))
+      {.effects.} 
 
-template withTransaction*(dbconn: OracleConnection, rc: var DpiResult,
+template withTransaction*(dbconn: OracleConnection,
     body: untyped) =
   ## used to encapsulate the operation within a transaction.
   ## if an exception is thrown (within the body) the
@@ -916,9 +929,12 @@ template withTransaction*(dbconn: OracleConnection, rc: var DpiResult,
   block:
     try:
       body
-      rc = DpiResult(dpiConn_commit(dbconn.connection))
+      if DpiResult(dpiConn_commit(dbconn.connection)).isFailure:
+        raise newException(IOError, "withTransaction: " &
+          getErrstr(rs.relatedConn.context) )
+        {.effects.}
     except:
-      rc = DpiResult(dpiConn_rollback(dbconn.connection))
+      discard dpiConn_rollback(dbconn.connection)
       raise
 
 
@@ -930,22 +946,34 @@ template withPreparedStatement*(ps: var PreparedStatement, body: untyped) =
   finally:
     ps.destroy
 
-template executeDDL*(conn: var OracleConnection,
-                     sql: SqlQuery,
-                     dpiMode: uint32 = DpiModeExec.DEFAULTMODE.ord) =
+proc executeDDL*(conn: var OracleConnection,
+                 sql: var SqlQuery,
+                 dpiMode: uint32 = DpiModeExec.DEFAULTMODE.ord) =
   ## convenience template to execute a ddl statement (no results returned)
   var rs: ResultSet
-  var pstmt: PreparedStatement
-  newPreparedStatement(conn, sql, pstmt)
-  withPreparedStatement(pstmt):
-    discard dpiStmt_getInfo(pstmt.pStmt, pstmt.statementInfo.addr)
-    if pstmt.statementInfo.isDDL == 1:
-      pstmt.executeStatement(rs, dpiMode)
+  var p: PreparedStatement
+  newPreparedStatement(conn, sql, p)
+
+  withPreparedStatement(p):
+    discard dpiStmt_getInfo(p.pStmt, p.statementInfo.addr)
+    if p.statementInfo.isDDL == 1:
+      p.executeStatement(rs, dpiMode)
     else:
       raise newException(IOError, "executeDDL: " &
         " statement is no DDL. please use executeStatement instead.")
       {.effects.}
 
+
+proc newTempLob*( conn : var OracleConnection, 
+                  lobtype : DpiLobType, 
+                  outlob : var Lob )  = 
+  ## creates a new temp lob
+  if DpiResult(dpiConn_newTempLob(conn.connection,
+               lobtype.ord.dpiOracleTypeNum,
+               addr(outlob.lobref))).isFailure:
+    raise newException(IOError, "createConnection: " &
+      getErrstr(conn.context))
+    {.effects.}
 
 when isMainModule:
   ## the HR Schema is used (XE) for the following tests
@@ -964,240 +992,228 @@ when isMainModule:
   var octx: OracleContext
   var errmsg: string
 
-  if isSuccess(newOracleContext(lang, DpiAuthMode.SYSDBA, octx, errmsg)):
-    # create the context with the nls_lang and authentication Method
-    var conn: OracleConnection
+  newOracleContext(lang, DpiAuthMode.SYSDBA, octx, errmsg)
+  # create the context with the nls_lang and authentication Method
+  var conn: OracleConnection
 
-    createConnection(octx, connectionstr, oracleuser, pw, conn)
-    # create the connection with the desired server, 
-    # credentials and the context
+  createConnection(octx, connectionstr, oracleuser, pw, conn)
+  # create the connection with the desired server, 
+  # credentials and the context
 
-    var query: SqlQuery = osql"""select 100 as col1, 'äöü' as col2 from dual 
-          union all  
-          select 200 , 'äöü2' from dual
-          union all
-          select 300 , 'äöü3' from dual
-          """
-      # query is unused at the moment
+  var query: SqlQuery = osql"""select 100 as col1, 'äöü' as col2 from dual 
+  union all  
+  select 200 , 'äöü2' from dual
+  union all
+  select 300 , 'äöü3' from dual
+  """
+  # query is unused at the moment
 
-    var query2: SqlQuery = osql""" select 
-                  rowid,
-                  EMPLOYEE_ID, 
-                  FIRST_NAME, 
-                  LAST_NAME, 
-                  EMAIL, 
-                  PHONE_NUMBER, 
-                  HIRE_DATE, 
-                  JOB_ID, 
-                  SALARY, 
-                  COMMISSION_PCT, 
-                  MANAGER_ID, 
-                  DEPARTMENT_ID 
-       from hr.employees where department_id = :param1  """
+  var query2: SqlQuery = osql""" select 
+          rowid,
+          EMPLOYEE_ID, 
+          FIRST_NAME, 
+          LAST_NAME, 
+          EMAIL, 
+          PHONE_NUMBER, 
+          HIRE_DATE, 
+          JOB_ID, 
+          SALARY, 
+          COMMISSION_PCT, 
+          MANAGER_ID, 
+          DEPARTMENT_ID 
+    from hr.employees where department_id = :param1  """
 
 
-    var pstmt: PreparedStatement
+  var pstmt: PreparedStatement
 
-    newPreparedStatement(conn, query2, pstmt, 10)
-    # create prepared statement for the specified query and
-    # the number of buffered result-rows. the number of buffered
-    # rows (window) is fixed and can't changed later on
-    var rs: ResultSet
+  newPreparedStatement(conn, query2, pstmt, 10)
+  # create prepared statement for the specified query and
+  # the number of buffered result-rows. the number of buffered
+  # rows (window) is fixed and can't changed later on
+  var rs: ResultSet
 
-    var param = addBindParameter(pstmt,
-                     Int64ColumnTypeParam,
-                      "param1")
-    param.setInt64(some(80.int64))
-    # create and set the bind parameter. query bind
-    # parameter are always non-columnar. 
-    # TODO: better separation -> addQueryBindParameter
-    #                         -> addArrayBindParameter
+  var param = addBindParameter(pstmt,
+             Int64ColumnTypeParam,
+              "param1")
+  param.setInt64(some(80.int64))
+  # create and set the bind parameter. query bind
+  # parameter are always non-columnar. 
 
-    executeStatement(pstmt,rs)
-    # execute the statement. if the resulting rows
-    # fit into entire window we are done here.
-    var ctl: ColumnTypeList = rs.getColumnTypeList
+  executeStatement(pstmt,rs)
+  # execute the statement. if the resulting rows
+  # fit into entire window we are done here.
+  var ctl: ColumnTypeList = rs.getColumnTypeList
 
-    for i,ct in rs.columnTypesIterator:
-      echo "cname:" & rs.rsColumnNames[i] & " colnumidx: " & 
-       $(i+1) & " " & $ct
+  for i,ct in rs.columnTypesIterator:
+    echo "cname:" & rs.rsColumnNames[i] & " colnumidx: " & 
+      $(i+1) & " " & $ct
 
-    for row in resultSetRowIterator(rs):
-      # the result iterator fetches internally further
-      # rows if present
-      # retrieve column values by columnname or index
-      echo $fetchRowId(row[0].data) &
-         " " & $fetchDouble(row[1].data) &
-             " " & $fetchString(row["FIRST_NAME"].data) &
-             " " & $fetchString(row["LAST_NAME"].data) &
-             " " & $fetchInt64(row[10].data) &
-             " " & $fetchInt64(row[11].data)
+  for row in resultSetRowIterator(rs):
+    # the result iterator fetches internally further
+    # rows if present 
+    # example of value retrieval by columnname or index
+    echo $fetchRowId(row[0].data) &
+    " " & $fetchDouble(row[1].data) &
+    " " & $fetchString(row["FIRST_NAME"].data) &
+    " " & $fetchString(row["LAST_NAME"].data) &
+    " " & $fetchInt64(row[10].data) &
+    " " & $fetchInt64(row[11].data)
 
-    echo "query1 executed - param department_id = 80 "
-    # rerun preparedStatement with a different parameter value
-    param.setInt64(some(10.int64))
-    executeStatement(pstmt, rs)
-    # the parameter is changed here and the query is 
-    # re-executed 
+  echo "query1 executed - param department_id = 80 "
+  # reexecute preparedStatement with a different parameter value
+  param.setInt64(some(10.int64))
+  executeStatement(pstmt, rs)
+  # the parameter is changed here and the query is 
+  # re-executed 
 
-    for row in resultSetRowIterator(rs):
-      # retrieve column values by columnname or index
-      echo $fetchRowId(row[0].data) &
-         " " & $fetchDouble(row[1].data) &
-             " " & $fetchString(row["FIRST_NAME"].data) &
-             " " & $fetchString(row["LAST_NAME"].data) &
-             " " & $fetchInt64(row[10].data) &
-             " " & $fetchInt64(row[11].data)
-    echo "query1 executed 2nd run - param department_id = 10 "
-
-    pstmt.destroy
-    # the prepared statement is destroyed and the 
-    # resources are freed (mandatory). the withPreparedStatement
-    # template calls this implicit.  
-      
-      # TODO: plsql example with types and select * from table()
-
-    var refCursorQuery: SqlQuery = osql""" begin 
-            open :1 for select 'teststr' StrVal from dual 
-                                union all 
-                        select 'teststr1' from dual; 
-            open :2 for select first_name,last_name 
-                         from hr.employees 
-                          where department_id = :3;
-            end; """
-    # FIXME: typed plsql blocks
-
-    # refcursor example
-    newPreparedStatement(conn, refCursorQuery, pstmt, 1)
-    # this query block contains two independent refcursors
-    # and the snd is parameterised.
-
-    withPreparedStatement(pstmt):
-      discard pstmt.addBindParameter(RefCursorColumnTypeParam,BindIdx(1))
-      # to consume the refcursor a bindParameter is needed                                   
-      discard pstmt.addBindParameter(RefCursorColumnTypeParam,BindIdx(2))
-      discard pstmt.addBindParameter(Int64ColumnTypeParam,BindIdx(3))
-      # filter: parameter for department_id                                   
-      pstmt[3.BindIdx].setInt64(some(80.int64))
-
-      pstmt.executeStatement(rs)
-
-      echo "refCursor 1 results: "
-      var refc: ResultSet
-
-      pstmt.openRefCursor(1.BindIdx, refc, 1, DpiModeExec.DEFAULTMODE.ord)
-      # opens the refcursor. once consumed it can't be reopended (TODO: check
-      # if that's a ODPI-C limitation)
-      for row in resultSetRowIterator(refc):
-        echo $fetchString(row[0].data)
-
-      echo "refCursor 2 results: filter with department_id = 80 "
+  for row in resultSetRowIterator(rs):
+    # retrieve column values by columnname or index
+    echo $fetchRowId(row[0].data) &
+      " " & $fetchDouble(row[1].data) &
+      " " & $fetchString(row["FIRST_NAME"].data) &
+      " " & $fetchString(row["LAST_NAME"].data) &
+      " " & $fetchInt64(row[10].data) &
+      " " & $fetchInt64(row[11].data)
   
-      var refc2 : ResultSet
-      pstmt.openRefCursor(2.BindIdx, refc2, 10, DpiModeExec.DEFAULTMODE.ord)
+  echo "query1 executed 2nd run - param department_id = 10 "
 
-      for row in resultSetRowIterator(refc2):
-        echo $fetchString(row[0].data) & " " & $fetchString(row[1].data)
+  pstmt.destroy
+  # the prepared statement is destroyed and the 
+  # resources are freed (mandatory). the withPreparedStatement
+  # template calls this implicit.  
 
-      var ctableq = osql""" CREATE TABLE HR.DEMOTESTTABLE(
-                                C1 VARCHAR2(20) NOT NULL 
-                              , C2 NUMBER(5,0)
-                              , C3 raw(20) 
-                              , C4 NUMBER(5,3)
-                              , C5 NUMBER(15,5)
-                              , C6 TIMESTAMP
-                              , CONSTRAINT DEMOTESTTABLE_PK PRIMARY KEY(C1)
-            ENABLE 
-          ) """
+  # TODO: plsql example with types and select * from table( .. )
 
-      try:
-        conn.executeDDL(ctableq) 
-        # execution of a single statement with no results
-      except:
-        discard
-      #  conn.executeDDL(ctableDrop)
+  var refCursorQuery: SqlQuery = osql""" begin 
+      open :1 for select 'teststr' StrVal from dual 
+                          union all 
+                  select 'teststr1' from dual; 
+      open :refc2 for select first_name,last_name 
+                   from hr.employees 
+                    where department_id = :3;
+      end; """
+  # FIXME: typed plsql blocks
 
-    var insertStmt: SqlQuery =
-      osql""" insert into HR.DEMOTESTTABLE(C1,C2,C3,C4,C5,C6) 
-                                        values (:1,:2,:3,:4,:5,:6) """
+  var pstmt2 : PreparedStatement
+  # refcursor example
+  newPreparedStatement(conn, refCursorQuery, pstmt2, 1)
+  # this query block contains two independent refcursors
+  # and the snd is parameterised.
 
-    conn.newPreparedStatement(insertStmt, pstmt, 10)
-    
-    # bulk insert example. 55 rows are inserted with a buffer
-    # window of 10 rows
+  withPreparedStatement(pstmt2):
+    discard pstmt2.addBindParameter(RefCursorColumnTypeParam,BindIdx(1))
+    # to consume the refcursor a bindParameter is needed                                   
+    discard pstmt2.addBindParameter(RefCursorColumnTypeParam,"refc2")
+    # example of bind by name
+    discard pstmt2.addBindParameter(Int64ColumnTypeParam,BindIdx(3))
+    # filter: parameter for department_id                                   
+    pstmt2[3.BindIdx].setInt64(some(80.int64))
 
-    discard pstmt.addArrayBindParameter(newStringColTypeParam(20),
-                     BindIdx(1), 10)
-    discard pstmt.addArrayBindParameter(Int64ColumnTypeParam,
-                                          BindIdx(2), 10)
-    discard pstmt.addArrayBindParameter(newRawColTypeParam(5),
-                     3.BindIdx,10)
-    discard pstmt.addArrayBindParameter((DpiNativeCType.FLOAT,
-                                          DpiOracleType.OTNATIVE_FLOAT,
-                                          1,false,0),
-                     4.BindIdx,10)                  
-    discard pstmt.addArrayBindParameter((DpiNativeCType.DOUBLE,
-                                          DpiOracleType.OTNUMBER,
-                                          1,false,0),
-                      5.BindIdx,10)                  
-    discard pstmt.addArrayBindParameter((DpiNativeCType.TIMESTAMP,
-                                          DpiOracleType.OTTIMESTAMP_TZ,
-                                          1,false,0),
-                       6.BindIdx,10)
-    # TODO: add the params to the prepared Statement
+    pstmt2.executeStatement(rs)
 
-    # if a nativeType/oracleType combination is not implemented by ODPI-C
-    # you will receive an exception here
-   
-    var rset: ResultSet
-    var result: DpiResult
+    echo "refCursor 1 results: "
+    var refc: ResultSet
 
-    conn.withTransaction(result): # commit after this block
-     # TODO: drop DpiResult for the transaction (do not expose to public api)
-      withPreparedStatement(pstmt): # cleanup of preparedStatement
-        var varc2 : Option[int64]
-        for i,bidx in pstmt.bulkBindIterator(rset,55,9):
-          # i: complete counter, bidx: window index
-          # convenience iterator. if the window is filled
-          # contents are flushed to the database.
-          if i == 9:
-            varc2 = none(int64) # simulate dbNull
-          else:
-            varc2 = some(i.int64)
-          # unfortunately setString/setBytes have a different
-          # API than the value-parameter types
-          pstmt[1.BindIdx].setString(bidx,some("test_äüö" & $i)) #pk
-          pstmt[2.BindIdx][bidx].setInt64(varc2)
-          pstmt[3.BindIdx].setBytes(bidx,some(@[(0xAA+i).byte,0xBB,0xCC]))
-          pstmt[4.BindIdx][bidx].setFloat(some(i.float32+0.12.float32))
-          pstmt[5.BindIdx][bidx].setDouble(some(i.float64+99.12345))
-          pstmt[6.BindIdx][bidx].setDateTime(some(getTime().local))
-    
-    var selectStmt: SqlQuery = osql"select c1,c2,rawtohex(c3) as c3,c4,c5,c6 from hr.demotesttable"
-    # read now the committed stuff
-    
-    conn.newPreparedStatement(selectStmt, pstmt, 20)
-    # 20 rows are buffered internally
-   
-    withPreparedStatement(pstmt): 
-      pstmt.executeStatement(rset)
-      for row in resultSetRowIterator(rset):
-       
-        echo $fetchString(row[0].data) & "  " & $fetchInt64(row[1].data) & 
-          " " & $fetchString(row[2].data) & 
+    pstmt2.openRefCursor(1.BindIdx, refc, 1, DpiModeExec.DEFAULTMODE.ord)
+    # opens the refcursor. once consumed it can't be reopended (TODO: check
+    # if that's a ODPI-C limitation)
+    for row in resultSetRowIterator(refc):
+      echo $fetchString(row[0].data)
+
+    echo "refCursor 2 results: filter with department_id = 80 "
+
+    var refc2 : ResultSet
+    pstmt2.openRefCursor("refc2", refc2, 10, DpiModeExec.DEFAULTMODE.ord)
+
+    for row in resultSetRowIterator(refc2):
+      echo $fetchString(row[0].data) & " " & $fetchString(row[1].data)
+
+  var ctableq = osql""" CREATE TABLE HR.DEMOTESTTABLE(
+                        C1 VARCHAR2(20) NOT NULL 
+                      , C2 NUMBER(5,0)
+                      , C3 raw(20) 
+                      , C4 NUMBER(5,3)
+                      , C5 NUMBER(15,5)
+                      , C6 TIMESTAMP 
+    ) """
+  # , CONSTRAINT DEMOTESTTABLE_PK PRIMARY KEY(C1)
+
+  conn.executeDDL(ctableq) 
+
+  var insertStmt: SqlQuery =
+    osql""" insert into HR.DEMOTESTTABLE(C1,C2,C3,C4,C5,C6) 
+                                values (:1,:2,:3,:4,:5,:6) """
+
+  var pstmt3 : PreparedStatement
+  conn.newPreparedStatement(insertStmt, pstmt3, 10)
+
+  # bulk insert example. 55 rows are inserted with a buffer
+  # window of 10 rows
+
+  discard pstmt3.addArrayBindParameter(newStringColTypeParam(20),
+             BindIdx(1), 10)
+  discard pstmt3.addArrayBindParameter(Int64ColumnTypeParam,
+                                  BindIdx(2), 10)
+  discard pstmt3.addArrayBindParameter(newRawColTypeParam(5),
+             3.BindIdx,10)
+  discard pstmt3.addArrayBindParameter(FloatColumnTypeParam,
+             4.BindIdx,10)                  
+  discard pstmt3.addArrayBindParameter(DoubleColumnTypeParam,
+              5.BindIdx,10)                  
+  discard pstmt3.addArrayBindParameter(ZonedTimestampTypeParam,
+               6.BindIdx,10)
+
+  # if a nativeType/oracleType combination is not implemented by ODPI-C
+  # you will receive an exception here
+
+  var rset: ResultSet
+
+  conn.withTransaction: # commit after this block
+    withPreparedStatement(pstmt3): # cleanup of preparedStatement
+      var varc2 : Option[int64]
+      for i,widx in pstmt3.bulkBindIterator(rset,55,9):
+        # i: count over entire 55 entries, widx: window index
+        # convenience iterator. if the window is filled
+        # contents are flushed to the database.
+        if i == 9:
+          varc2 = none(int64) # simulate dbNull
+        else:
+          varc2 = some(i.int64)
+        # unfortunately setString/setBytes have a different
+        # API than the value-parameter types
+        pstmt3[1.BindIdx].setString(widx,some("test_äüö" & $i)) #pk
+        pstmt3[2.BindIdx][widx].setInt64(varc2)
+        # the fastest access is by ParamTypeRef directly (no param lookup)
+        pstmt3[3.BindIdx].setBytes(widx,some(@[(0xAA+i).byte,0xBB,0xCC]))
+        pstmt3[4.BindIdx][widx].setFloat(some(i.float32+0.12.float32))
+        pstmt3[5.BindIdx][widx].setDouble(some(i.float64+99.12345))
+        pstmt3[6.BindIdx][widx].setDateTime(some(getTime().local))
+
+  var selectStmt: SqlQuery = osql"""select c1,c2,rawtohex(c3)
+                                         as c3,c4,c5,c6 from hr.demotesttable"""
+      # read now the committed stuff
+
+  var pstmt4 : PreparedStatement
+  var rset4 : ResultSet
+
+  conn.newPreparedStatement(selectStmt, pstmt4, 4)
+      # 4 rows are buffered internally
+
+  withPreparedStatement(pstmt4): 
+    pstmt4.executeStatement(rset4)
+    for row in resultSetRowIterator(rset4):       
+      echo $fetchString(row[0].data) & "  " & $fetchInt64(row[1].data) & 
+            " " & $fetchString(row[2].data) & 
           # " "  & $fetchFloat(row[3].data) &
           # TODO: eval float32 vals 
-          " " & $fetchDouble(row[4].data) & " " & $(fetchDateTime(row[5].data).get)
-          # FIXME: fetchFloat returns wrong values
+            " " & $fetchDouble(row[4].data) & " " & $(fetchDateTime(row[5].data).get)
+          # FIXME: fetchFloat returns wrong values / dont work as expected
 
-    # drop the table
-    var dropStmt: SqlQuery = osql"drop table hr.demotesttable"
-    conn.executeDDL(dropStmt)
-    # cleanup - table drop
+      # drop the table
+  var dropStmt: SqlQuery = osql"drop table hr.demotesttable"
+  conn.executeDDL(dropStmt)
+      # cleanup - table drop
 
-    discard conn.releaseConnection
-    discard destroyOracleContext(octx)
 
-  else:
-    echo errmsg
-
+  conn.releaseConnection
+  destroyOracleContext(octx)
