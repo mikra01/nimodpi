@@ -766,9 +766,10 @@ proc executeStatement*(prepStmt: var PreparedStatement,
   # TODO: implement
 
 proc updateBindParams(prepStmt: var PreparedStatement, rowBufferSize : int) =
-  # reread the params for reexecution of the prepared statement 
+  # reread the params for reexecution of the prepared statement
   for i in prepStmt.boundParams.low .. prepStmt.boundParams.high:
     let bp = prepStmt.boundParams[i]
+
     if rowBufferSize > 1:
       discard dpiVar_setNumElementsInArray(bp.paramVar,
                                            rowBufferSize.uint32)
@@ -912,7 +913,7 @@ iterator bulkBindIterator*(pstmt: var PreparedStatement,
     updateBindParams(pstmt,rowBufferIdx)
     if DpiResult(dpiStmt_executeMany(pstmt.pStmt,
                                     DpiModeExec.DEFAULTMODE.ord,
-                                    pstmt.bufferedRows.uint32)).isFailure:
+                                    rowBufferIdx.uint32)).isFailure:
       raise newException(IOError, "executeMany: " &
         getErrstr(pstmt.relatedConn.context))
       {.effects.} 
@@ -1135,10 +1136,10 @@ when isMainModule:
                       , C3 raw(20) 
                       , C4 NUMBER(5,3)
                       , C5 NUMBER(15,5)
-                      , C6 TIMESTAMP 
-    ) """
-  # , CONSTRAINT DEMOTESTTABLE_PK PRIMARY KEY(C1)
-
+                      , C6 TIMESTAMP
+                      , CONSTRAINT DEMOTESTTABLE_PK PRIMARY KEY(C1) 
+    ) """ 
+ 
   conn.executeDDL(ctableq) 
 
   var insertStmt: SqlQuery =
@@ -1197,8 +1198,8 @@ when isMainModule:
   var pstmt4 : PreparedStatement
   var rset4 : ResultSet
 
-  conn.newPreparedStatement(selectStmt, pstmt4, 4)
-      # 4 rows are buffered internally
+  conn.newPreparedStatement(selectStmt, pstmt4, 3)
+  # test with smaller window: 3 rows are buffered internally
 
   withPreparedStatement(pstmt4): 
     pstmt4.executeStatement(rset4)
@@ -1237,11 +1238,6 @@ when isMainModule:
 
   conn.executeDDL(demoInOut)
   # incarnate function  
-
-  # var compile = osql"ALTER FUNCTION HR.DEMO_INOUT COMPILE "
-  # TODO: eval why we need that
-  # conn.executeDDL(compile)
-
   var demoCallFunc = osql"""begin :1 := HR.DEMO_INOUT(:2, :3, :4); end; """
   # :1 result variable type varchar2
   # :2 in variable type varchar2
@@ -1257,17 +1253,31 @@ when isMainModule:
     let param3 = callFunc.addBindParameter(newStringColTypeParam(20),BindIdx(3))
     let param4 = callFunc.addBindParameter(newStringColTypeParam(20),BindIdx(4))
     # direct param access in this example
-    param2.setString(0,some("teststr")) 
+    param2.setString(0,some("teststr äüö")) 
     param3.setString(0,some("p2"))
     callFunc.executeStatement(callFuncResult) 
     
     var r1 = param1.fetchString()
     var r3 = param3.fetchString()
     var r4 = param4.fetchString()
+    echo "results 1st run:"
+    echo "param :1 (result) = " & r1.get
+    if r3.isSome:
+      echo "param :3 (inout) = " & r3.get
 
+    echo "param :4 (out) = " & r4.get
+
+    # reexecute
+    param3.setString(0,some("2nd_run")) 
+    # FIXME: issue: param3 called with value from the first run
+    callFunc.executeStatement(callFuncResult) 
+    echo "results snd run: "   
     echo "param :1 (result) = " & r1.get
     echo "param :3 (inout) = " & r3.get
-    echo "param :4(out) = " & r4.get
+    echo "param :4 (out) = " & r4.get
+
+
+
 
   var cleanupDemo : SqlQuery = osql" drop function hr.demo_inout "
   conn.executeDDL(cleanupDemo)
