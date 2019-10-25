@@ -181,10 +181,10 @@ template fetchString*( param : ParamTypeRef) : Option[string] =
   param[0].fetchString
 
 template fetchString*( param : ParamTypeRef, rownum : int) : Option[string] =
-  param[0].fetchString
+  param[rownum].fetchString
 
 template setString*(param : ParamTypeRef , rownum : int, value : Option[string]) = 
-    ## bind parameter setter string type. for single parameters set the rownum
+    ## bind parameter setter string type. for single parameters please set the rownum
     ## to 0. 
     if value.isNone:
       param.buffer.setDbNull

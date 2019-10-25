@@ -941,6 +941,7 @@ template withTransaction*(dbconn: OracleConnection,
 template withPreparedStatement*(ps: var PreparedStatement, body: untyped) =
   ## releases the preparedStatement after leaving
   ## the block.
+  # FIXME: prevent nesting
   try:
     body
   finally:
@@ -1213,6 +1214,63 @@ when isMainModule:
   var dropStmt: SqlQuery = osql"drop table hr.demotesttable"
   conn.executeDDL(dropStmt)
       # cleanup - table drop
+
+  var demoInOUT : SqlQuery = osql""" 
+     CREATE OR REPLACE FUNCTION HR.DEMO_INOUT 
+     (
+      PARAM1 IN VARCHAR2, 
+      PARAM2 IN OUT NOCOPY VARCHAR2, 
+      PARAM3 OUT NOCOPY VARCHAR2
+      ) RETURN VARCHAR2 AS
+           px1 varchar2(50);
+        BEGIN
+         if param2 is not null then
+          px1 := param1 || '_test_' || param2;
+          param3 := param2;
+          param2 := px1;
+         else
+          param3 := 'param2_was_null';
+         end if;
+      RETURN 'FUNCTION_DEMO_INOUT_CALLED';
+    END DEMO_INOUT;
+     """
+
+  conn.executeDDL(demoInOut)
+  # incarnate function  
+
+  # var compile = osql"ALTER FUNCTION HR.DEMO_INOUT COMPILE "
+  # TODO: eval why we need that
+  # conn.executeDDL(compile)
+
+  var demoCallFunc = osql"""begin :1 := HR.DEMO_INOUT(:2, :3, :4); end; """
+  # :1 result variable type varchar2
+  # :2 in variable type varchar2
+  # :3 inout variable type varchar2
+  # :4 out variable type varchar2
+  var callFunc : PreparedStatement
+  var callFuncResult : ResultSet
+  newPreparedStatement(conn,demoCallFunc,callFunc, 1)
+  
+  withPreparedStatement(callFunc): 
+    let param1 = callFunc.addBindParameter(newStringColTypeParam(50),BindIdx(1))
+    let param2 = callFunc.addBindParameter(newStringColTypeParam(20),BindIdx(2))
+    let param3 = callFunc.addBindParameter(newStringColTypeParam(20),BindIdx(3))
+    let param4 = callFunc.addBindParameter(newStringColTypeParam(20),BindIdx(4))
+    # direct param access in this example
+    param2.setString(0,some("teststr")) 
+    param3.setString(0,some("p2"))
+    callFunc.executeStatement(callFuncResult) 
+    
+    var r1 = param1.fetchString()
+    var r3 = param3.fetchString()
+    var r4 = param4.fetchString()
+
+    echo "param :1 (result) = " & r1.get
+    echo "param :3 (inout) = " & r3.get
+    echo "param :4(out) = " & r4.get
+
+  var cleanupDemo : SqlQuery = osql" drop function hr.demo_inout "
+  conn.executeDDL(cleanupDemo)
 
 
   conn.releaseConnection
