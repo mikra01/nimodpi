@@ -122,6 +122,7 @@ type
   # predefined column types
 
 const
+  NlsLangDefault = "UTF8".NlsLang
   RefCursorColumnTypeParam* = (DpiNativeCType.STMT,
                                DpiOracleType.OTSTMT,
                                1, false, 1)
@@ -313,8 +314,9 @@ template osql*(sql: string): SqlQuery =
   ## template to construct an oracle-SqlQuery type
   SqlQuery(sql.cstring)
 
-proc newOracleContext*(encoding: NlsLang, authMode: DpiAuthMode,
-                       outCtx: var OracleContext) =
+proc newOracleContext*(outCtx: var OracleContext, 
+                       authMode : DpiAuthMode,
+                       encoding : NlsLang = NlsLangDefault ) =
   ## constructs a new OracleContext needed to access the database.
   ## if DpiResult.SUCCESS is returned the outCtx is populated.
   ## In case of an error an IOException is thrown
@@ -984,7 +986,6 @@ proc newTempLob*( conn : var OracleConnection,
 when isMainModule:
   ## the HR Schema is used (XE) for the following tests
   const
-    lang: NlsLang = "UTF8".NlsLang
     oracleuser: string = "sys"
     pw: string = "<pwd>"
     connectionstr: string = """(DESCRIPTION = (ADDRESS = 
@@ -997,8 +998,9 @@ when isMainModule:
 
   var octx: OracleContext
 
-  newOracleContext(lang, DpiAuthMode.SYSDBA, octx)
-  # create the context with the nls_lang and authentication Method
+  newOracleContext(octx,DpiAuthMode.SYSDBA)
+  # create the context with authentication Method
+  # SYSDBA and default encoding (UTF8)
   var conn: OracleConnection
 
   createConnection(octx, connectionstr, oracleuser, pw, conn)
