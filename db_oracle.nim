@@ -1181,7 +1181,7 @@ when isMainModule:
     conn.withTransaction: # commit after this block
       # cleanup of preparedStatement beyond this block
       var varc2 : Option[int64]
-      for i,windowIdx in pstmt3.bulkBindIterator(rset,12,8):
+      for i,bufferRowIdx in pstmt3.bulkBindIterator(rset,12,8):
         # i: count over 13 entries - with a buffer window of 9 elements
         # if the buffer window is filled
         # contents are flushed to the database.
@@ -1191,22 +1191,22 @@ when isMainModule:
           varc2 = some(i.int64)
         # unfortunately setString/setBytes have a different
         # API than the value-parameter types
-        pstmt3[1.BindIdx][windowIdx].setString(some("test_äüö" & $i)) #pk
-        pstmt3[2.BindIdx][windowIdx].setInt64(varc2)
-        pstmt3[3.BindIdx][windowIdx].setBytes(some(@[(0xAA+i).byte,0xBB,0xCC]))
-        pstmt3[4.BindIdx][windowIdx].setFloat(some(i.float32+0.12.float32))
-        pstmt3[5.BindIdx][windowIdx].setDouble(some(i.float64+99.12345))
-        pstmt3[6.BindIdx][windowIdx].setDateTime(some(getTime().local))
+        pstmt3[1.BindIdx][bufferRowIdx].setString(some("test_äüö" & $i)) #pk
+        pstmt3[2.BindIdx][bufferRowIdx].setInt64(varc2)
+        pstmt3[3.BindIdx][bufferRowIdx].setBytes(some(@[(0xAA+i).byte,0xBB,0xCC]))
+        pstmt3[4.BindIdx][bufferRowIdx].setFloat(some(i.float32+0.12.float32))
+        pstmt3[5.BindIdx][bufferRowIdx].setDouble(some(i.float64+99.12345))
+        pstmt3[6.BindIdx][bufferRowIdx].setDateTime(some(getTime().local))
     # example: reuse of preparedStatement and insert another 8 rows
     # with a buffer window of 3 elements 
     conn.withTransaction:
-      for i,windowIdx in pstmt3.bulkBindIterator(rset,7,2):
-        pstmt3[1.BindIdx][windowIdx].setString(some("test_äüö" & $(i+13))) #pk
-        pstmt3[2.BindIdx][windowIdx].setInt64(some(i.int64))
-        pstmt3[3.BindIdx][windowIdx].setBytes(none(seq[byte]))
-        pstmt3[4.BindIdx][windowIdx].setFloat(none(float32))
-        pstmt3[5.BindIdx][windowIdx].setDouble(none(float64))
-        pstmt3[6.BindIdx][windowIdx].setDateTime(none(DateTime))
+      for i,bufferRowIdx in pstmt3.bulkBindIterator(rset,7,2):
+        pstmt3[1.BindIdx][bufferRowIdx].setString(some("test_äüö" & $(i+13))) #pk
+        pstmt3[2.BindIdx][bufferRowIdx].setInt64(some(i.int64))
+        pstmt3[3.BindIdx][bufferRowIdx].setBytes(none(seq[byte]))
+        pstmt3[4.BindIdx][bufferRowIdx].setFloat(none(float32))
+        pstmt3[5.BindIdx][bufferRowIdx].setDouble(none(float64))
+        pstmt3[6.BindIdx][bufferRowIdx].setDateTime(none(DateTime))
 
 
 
@@ -1256,7 +1256,8 @@ when isMainModule:
      """
 
   conn.executeDDL(demoInOut)
-  # incarnate function  
+  # incarnate function
+
   var demoCallFunc = osql"""begin :1 := HR.DEMO_INOUT(:2, :3, :4); end; """
   # :1 result variable type varchar2
   # :2 in variable type varchar2
