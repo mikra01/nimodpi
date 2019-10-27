@@ -197,21 +197,6 @@ template setString*(val : ptr dpiData, value : Option[string]) =
 template setString*(param : ParamTypeRef, value : Option[string]) =
   param[0].setString(value)
 
-# template setString*(param : ParamTypeRef , rownum : int, value : Option[string]) = 
-#    ## bind parameter setter string type. for single parameters please set the rownum
-#    ## to 0. 
-#    if value.isNone:
-#      param.buffer[rownum].setDbNull
-#    else: 
-#      param.buffer[rownum].setNotDbNull 
-#      let str : cstring  = $value.get
-#      # todo: eval if setFromBytes is needed. 
-#      # possibly not because no getFromBytes present
-#      discard dpiVar_setFromBytes(param.paramVar,
-#                                  rownum.uint32,
-#                                  str,
-#                                  str.len.uint32)    
-
 template fetchBytes*( val : ptr dpiData ) : Option[seq[byte]] =
     ## fetches the specified value as seq[byte]. the byte array is copied
     if val.isDbNull:
@@ -229,20 +214,6 @@ template setBytes*( val : ptr dpiData, value : Option[seq[byte]] ) =
   else:
     val.setNotDbNull
     value.get.copySeq2Data(val)
-
-# template setBytes*(param : ParamTypeRef , rownum : int = 0, value: Option[seq[byte]]) = 
-#    ## bind parameter setter seq[byte] type. this setter operates always with index 0
-#    ## the value is copied into the drivers domain 
-#    if value.isNone:
-#      param.buffer[rownum].setDbNull
-#    else:
-#      param.buffer[rownum].setNotDbNull  
-#      let seqb : seq[byte] = value.get
-#      let cstr = cast[cstring](unsafeAddr(seqb[0]))
-#      discard dpiVar_setFromBytes(param.paramVar,
-#                                  rownum.uint32,
-#                                  cstr,
-#                                  seqb.len.uint32)    
     
 template fetchRowId*( param : ptr dpiData ) : ptr dpiRowid =
     ## fetches the rowId (internal representation).
