@@ -314,12 +314,10 @@ template osql*(sql: string): SqlQuery =
   SqlQuery(sql.cstring)
 
 proc newOracleContext*(encoding: NlsLang, authMode: DpiAuthMode,
-                       outCtx: var OracleContext,
-                           outMsg: var string) =
+                       outCtx: var OracleContext) =
   ## constructs a new OracleContext needed to access the database.
   ## if DpiResult.SUCCESS is returned the outCtx is populated.
-  ## In case of an error outMsg
-  ## contains the error message.
+  ## In case of an error an IOException is thrown
   var ei: dpiErrorInfo
   if DpiResult(
        dpiContext_create(DPI_MAJOR_VERSION, DPI_MINOR_VERSION, addr(
@@ -998,9 +996,8 @@ when isMainModule:
                             ))"""
 
   var octx: OracleContext
-  var errmsg: string
 
-  newOracleContext(lang, DpiAuthMode.SYSDBA, octx, errmsg)
+  newOracleContext(lang, DpiAuthMode.SYSDBA, octx)
   # create the context with the nls_lang and authentication Method
   var conn: OracleConnection
 
