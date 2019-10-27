@@ -197,7 +197,8 @@ type
                 
 include odpi_obj2string
 include odpi_to_nimtype
-                  
+include nimtype_to_odpi                  
+
 template newStringColTypeParam(strlen: int): ColumnType =
   ## helper to construct a string ColumnType with specified len
   (DpiNativeCType.BYTES, DpiOracleType.OTVARCHAR, strlen, false, 0)
@@ -635,7 +636,7 @@ proc destroy*(prepStmt: var PreparedStatement) =
                               
 proc executeAndInitResultSet(prepStmt: var PreparedStatement,
                          dpiMode: uint32 = DpiModeExec.DEFAULTMODE.ord,
-                         isRefCursor: bool = false) =
+                         isRefCursor: bool ) =
   # internal proc. initialises the derived ResultSet
   # from the given preparedStatement by calling execute on it
   # TODO: reset() needed
@@ -644,18 +645,7 @@ proc executeAndInitResultSet(prepStmt: var PreparedStatement,
 
   if not isRefCursor:
   # TODO: get rid of quirky isRefCursor flag
-    if prepStmt.boundParams.len > 0 and
-         prepStmt.boundParams[0].rowBufferSize > 1:
-      ## bulk insert - no results are fetched
-      if DpiResult(dpiStmt_executeMany(prepStmt.pStmt,
-                                       dpimode,
-                                       prepStmt.bufferedRows.
-                                         uint32)).isFailure:
-        raise newException(IOError, "executeMany: " &
-          getErrstr(prepStmt.relatedConn.context))
-        {.effects.}
-    else:
-      if DpiResult(
+    if DpiResult(
            dpiStmt_execute(prepStmt.pStmt,
                            dpiMode,
                            prepStmt.columnCount.addr)
@@ -758,39 +748,32 @@ proc openRefCursor*(ps: var PreparedStatement,
   let param = ps[paramName]
   openRefCursor(ps,param,outRefCursor,bufferedRows,dpiMode)
 
+template resetParamRows(ps : var PreparedStatement) =
+  ## resets the parameter rows to the spawned maxrow 
+  ## window size of the prepared statement
+  for i in ps.boundParams.low .. ps.boundParams.high:
+    ps.boundParams[i].rowBufferSize = ps.bufferedRows
 
-# proc closeRefCursor*(rs: var ResultSet) =
-# deprecated. binds are release on destroy or by the preparedStatement
-# with-template
-#  ## releases refCursors output-binds
-#  for i in rs.rsOutputCols.low .. rs.rsOutputCols.high:
-#    discard dpiVar_release(rs.rsOutputCols[i].paramVar)
-#  rs.rsOutputCols.setLen(0)
 
-proc executeStatement*(prepStmt: var PreparedStatement,
-  numRows: int,
-  dpiMode: uint32 = DpiModeExec.DEFAULTMODE.ord) =
-  ## executes the statement without returning any rows.
-  ## suitable for bulk insert
-  discard
-  # TODO: implement
-
-proc updateBindParams(prepStmt: var PreparedStatement, rowBufferSize : int) =
+template updateBindParams(prepStmt: var PreparedStatement) =
   # reread the params for reexecution of the prepared statement
   for i in prepStmt.boundParams.low .. prepStmt.boundParams.high:
     let bp = prepStmt.boundParams[i]
 
-    if rowBufferSize > 1:
-      discard dpiVar_setNumElementsInArray(bp.paramVar,
-                                           rowBufferSize.uint32)
-
+    if bp.rowBufferSize > 1:
+      if DpiResult(dpiVar_setNumElementsInArray(bp.paramVar,
+                                           bp.rowBufferSize.uint32)).isFailure:
+        raise newException(IOError, "updateBindParams: " &
+                            getErrstr(prepStmt.relatedConn.context))
+        {.effects.}
+                          
     if bp.bindPosition.kind == BindInfoType.byPosition:
       if DpiResult(dpiStmt_bindByPos(prepStmt.pStmt,
                                      bp.bindPosition.paramVal.uint32,
                                      bp.paramVar
         )
       ).isFailure:
-        raise newException(IOError, "bindArrayParams: " &
+        raise newException(IOError, "updateBindParams: " &
                   getErrstr(prepStmt.relatedConn.context))
         {.effects.}
 
@@ -801,7 +784,7 @@ proc updateBindParams(prepStmt: var PreparedStatement, rowBufferSize : int) =
                                      bp.paramVar
         )
       ).isFailure:
-        raise newException(IOError, "bindArrayParams: " &
+        raise newException(IOError, "updateBindParams: " &
                          $bp.bindPosition.paramName &
                            getErrstr(prepStmt.relatedConn.context))
         {.effects.}  
@@ -817,11 +800,25 @@ proc executeStatement*(prepStmt: var PreparedStatement,
 
   # probe if binds present
   if prepStmt.boundParams.len > 0:
-    updateBindParams(prepStmt,prepStmt.bufferedRows)
-    # FIXME: track the number of rows within the statement, not the param
+    updateBindParams(prepStmt)
 
-  prepStmt.executeAndInitResultSet(dpiMode, false)
+  prepStmt.executeAndInitResultSet(dpiMode,false)
   outRs = cast[ResultSet](prepStmt)
+
+template executeBulkUpdate(prepStmt: var PreparedStatement,
+                        numRows: int,
+                        dpiMode: uint32 = DpiModeExec.DEFAULTMODE.ord) =
+  ## executes the statement without returning any rows.
+  ## suitable for bulk insert
+  if prepStmt.boundParams.len > 0:
+    updateBindParams(prepStmt)
+
+  if DpiResult(dpiStmt_executeMany(prepStmt.pStmt,
+                                  dpimode,
+                                  numRows.uint32)).isFailure:
+    raise newException(IOError, "executeMany: " &
+           getErrstr(prepStmt.relatedConn.context))
+    {.effects.}
 
 proc fetchNextRows*(rs: var ResultSet) =
   ## fetches next rows (if present) into the internal buffer.
@@ -893,7 +890,7 @@ iterator resultSetRowIterator*(rs: var ResultSet): DpiRow =
 iterator bulkBindIterator*(pstmt: var PreparedStatement,
                            rs: var ResultSet,
                            maxRows : int,
-                           maxRowBufferIdx : int): 
+                           maxRowBufferWindow : int): 
                               tuple[rowcounter:int,
                                     buffercounter:int] =
   ## convenience iterator for bulk binding.
@@ -901,32 +898,31 @@ iterator bulkBindIterator*(pstmt: var PreparedStatement,
   ## index of the rowBuffer. maxRowBufferIdx is the high watermark.
   ## if it is reached executeStatement is called automatically
   ## and the internal counter is reset to 0.
-  if maxRows < maxRowBufferIdx:
+  ## both internal counters (maxRows and maxRowBufferWindow) start
+  ## with 0 
+  if maxRows < maxRowBufferWindow:
     raise newException(IOError,"bulkBindIterator: " &
       "constraint maxRows < maxRowBufferIdx violated " )
     {.effects.}  
+  
+  pstmt.resetParamRows
+  # reset the parameter rows to the preparedstatements window
 
   var rowBufferIdx = 0.int
-  
+
   for i in countup(0,maxRows):
     yield (rowcounter:i,buffercounter:rowBufferIdx)
-    if rowBufferIdx == maxRowBufferIdx:
+    if rowBufferIdx == maxRowBufferWindow:
       # if high watermark reached flush the buffer
       # to db and reset the buffer counter
-      pstmt.executeStatement(rs)
+      pstmt.executeBulkUpdate(maxRowBufferWindow+1)
       rowBufferIdx = 0
     else:
       inc rowBufferIdx                     
   
   if rowBufferIdx > 0:
-    # rows iterator finished but unsent data within buffer
-    updateBindParams(pstmt,rowBufferIdx)
-    if DpiResult(dpiStmt_executeMany(pstmt.pStmt,
-                                    DpiModeExec.DEFAULTMODE.ord,
-                                    rowBufferIdx.uint32)).isFailure:
-      raise newException(IOError, "executeMany: " &
-        getErrstr(pstmt.relatedConn.context))
-      {.effects.} 
+    # probe if unsent rows present
+    pstmt.executeBulkUpdate(rowBufferIdx)
 
 template withTransaction*(dbconn: OracleConnection,
     body: untyped) =
@@ -1151,6 +1147,7 @@ when isMainModule:
     ) """ 
  
   conn.executeDDL(ctableq) 
+  echo "table created"
 
   var insertStmt: SqlQuery =
     osql""" insert into HR.DEMOTESTTABLE(C1,C2,C3,C4,C5,C6) 
@@ -1158,9 +1155,9 @@ when isMainModule:
 
   var pstmt3 : PreparedStatement
   conn.newPreparedStatement(insertStmt, pstmt3, 10)
-
   # bulk insert example. 55 rows are inserted with a buffer
-  # window of 10 rows
+  # window of 10 rows. the buffer row window is fixed and can't
+  # changed
 
   discard pstmt3.addArrayBindParameter(newStringColTypeParam(20),
              BindIdx(1), 10)
@@ -1180,12 +1177,13 @@ when isMainModule:
 
   var rset: ResultSet
 
-  conn.withTransaction: # commit after this block
-    withPreparedStatement(pstmt3): # cleanup of preparedStatement
+  pstmt3.withPreparedStatement:
+    conn.withTransaction: # commit after this block
+      # cleanup of preparedStatement beyond this block
       var varc2 : Option[int64]
-      for i,widx in pstmt3.bulkBindIterator(rset,55,9):
-        # i: count over entire 55 entries, widx: window index
-        # convenience iterator. if the window is filled
+      for i,windowIdx in pstmt3.bulkBindIterator(rset,12,8):
+        # i: count over 13 entries - with a buffer window of 9 elements
+        # if the buffer window is filled
         # contents are flushed to the database.
         if i == 9:
           varc2 = none(int64) # simulate dbNull
@@ -1193,13 +1191,24 @@ when isMainModule:
           varc2 = some(i.int64)
         # unfortunately setString/setBytes have a different
         # API than the value-parameter types
-        pstmt3[1.BindIdx].setString(widx,some("test_äüö" & $i)) #pk
-        pstmt3[2.BindIdx][widx].setInt64(varc2)
-        # the fastest access is by ParamTypeRef directly (no param lookup)
-        pstmt3[3.BindIdx].setBytes(widx,some(@[(0xAA+i).byte,0xBB,0xCC]))
-        pstmt3[4.BindIdx][widx].setFloat(some(i.float32+0.12.float32))
-        pstmt3[5.BindIdx][widx].setDouble(some(i.float64+99.12345))
-        pstmt3[6.BindIdx][widx].setDateTime(some(getTime().local))
+        pstmt3[1.BindIdx][windowIdx].setString(some("test_äüö" & $i)) #pk
+        pstmt3[2.BindIdx][windowIdx].setInt64(varc2)
+        pstmt3[3.BindIdx][windowIdx].setBytes(some(@[(0xAA+i).byte,0xBB,0xCC]))
+        pstmt3[4.BindIdx][windowIdx].setFloat(some(i.float32+0.12.float32))
+        pstmt3[5.BindIdx][windowIdx].setDouble(some(i.float64+99.12345))
+        pstmt3[6.BindIdx][windowIdx].setDateTime(some(getTime().local))
+    # example: reuse of preparedStatement and insert another 8 rows
+    # with a buffer window of 3 elements 
+    conn.withTransaction:
+      for i,windowIdx in pstmt3.bulkBindIterator(rset,7,2):
+        pstmt3[1.BindIdx][windowIdx].setString(some("test_äüö" & $(i+13))) #pk
+        pstmt3[2.BindIdx][windowIdx].setInt64(some(i.int64))
+        pstmt3[3.BindIdx][windowIdx].setBytes(none(seq[byte]))
+        pstmt3[4.BindIdx][windowIdx].setFloat(none(float32))
+        pstmt3[5.BindIdx][windowIdx].setDouble(none(float64))
+        pstmt3[6.BindIdx][windowIdx].setDateTime(none(DateTime))
+
+
 
   var selectStmt: SqlQuery = osql"""select c1,c2,rawtohex(c3)
                                          as c3,c4,c5,c6 from hr.demotesttable"""
@@ -1208,8 +1217,8 @@ when isMainModule:
   var pstmt4 : PreparedStatement
   var rset4 : ResultSet
 
-  conn.newPreparedStatement(selectStmt, pstmt4, 3)
-  # test with smaller window: 3 rows are buffered internally
+  conn.newPreparedStatement(selectStmt, pstmt4, 5)
+  # test with smaller window: 5 rows are buffered internally for reading
 
   withPreparedStatement(pstmt4): 
     pstmt4.executeStatement(rset4)
@@ -1218,13 +1227,13 @@ when isMainModule:
             " " & $fetchString(row[2].data) & 
           # " "  & $fetchFloat(row[3].data) &
           # TODO: eval float32 vals 
-            " " & $fetchDouble(row[4].data) & " " & $(fetchDateTime(row[5].data).get)
+            " " & $fetchDouble(row[4].data) & " " & $(fetchDateTime(row[5].data))
           # FIXME: fetchFloat returns wrong values / dont work as expected
-
+  echo "finished fetching" 
       # drop the table
   var dropStmt: SqlQuery = osql"drop table hr.demotesttable"
   conn.executeDDL(dropStmt)
-      # cleanup - table drop
+    # cleanup - table drop
 
   var demoInOUT : SqlQuery = osql""" 
      CREATE OR REPLACE FUNCTION HR.DEMO_INOUT 
@@ -1264,8 +1273,8 @@ when isMainModule:
     let param3 = callFunc.addBindParameter(newStringColTypeParam(20),BindIdx(3))
     let param4 = callFunc.addBindParameter(newStringColTypeParam(20),BindIdx(4))
     # direct param access in this example
-    param2.setString(0,some("teststr äüö")) 
-    param3.setString(0,some("p2"))
+    param2.setString(some("teststr äüö")) 
+    param3.setString(some("p2"))
     callFunc.executeStatement(callFuncResult) 
     var r1 = param1.fetchString()
     # fetch functions result

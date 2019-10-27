@@ -6,8 +6,7 @@ template fetchBoolean*(val : ptr dpiData) : Option[bool] =
       some(val.value.asBoolean)
 
 template fetchBoolean*(param : ParamTypeRef) : Option[bool] =
-  ## fetches the sepcified value as boolean. suitable for
-  ## non-array bind parameters
+  ## fetches the sepcified value as boolean by index 0
   param[0].fetchBoolean
 
 template setBoolean*(param : ptr dpiData, value : Option[bool] ) =
@@ -19,7 +18,7 @@ template setBoolean*(param : ptr dpiData, value : Option[bool] ) =
        param.value.asBoolean = value.get 
 
 template setBoolean*( param : ParamTypeRef, value : Option[bool]) =
-  ## access template for single bind variables
+  ## access template for single bind variables (index 0)
   param[0].setBoolean(value)      
       
 # simple type conversion templates.
@@ -86,6 +85,7 @@ template setUInt64*(param : ptr dpiData, value : Option[uint64]) =
       param.value.asUint64 = value.get
 
 template setUInt64*( param : ParamTypeRef, value : Option[uint64] ) =
+  ## convenience template for accessing the first parameter within the buffer
   param[0].setUInt64(value)
 
 template fetchInt64*(val : ptr dpiData) : Option[int64] =
@@ -98,7 +98,7 @@ template fetchInt64*(val : ptr dpiData) : Option[int64] =
 template fetchInt64*( param : ParamTypeRef ) : Option[int64] =
   param[0].fetchInt64
 
-proc setInt64( param : ptr dpiData, value : Option[int64]) =
+proc setInt64*( param : ptr dpiData, value : Option[int64]) =
      ## bind parameter setter int64 type. 
      if value.isNone:
        param.setDbNull
@@ -106,7 +106,8 @@ proc setInt64( param : ptr dpiData, value : Option[int64]) =
        param.setNotDbNull
        param.value.asInt64  = value.get   
 
-template setInt64( param : ParamTypeRef, value :  Option[int64] )  =
+template setInt64*( param : ParamTypeRef, value :  Option[int64] )  =
+  ## convenience template for accessing the first parameter within the buffer
   param[0].setInt64(value)
 
 template fetchIntervalDS*(val : ptr dpiData ) : Option[Duration] =
@@ -178,25 +179,38 @@ template fetchString*( val : ptr dpiData ) : Option[string] =
       some(toNimString(val))
   
 template fetchString*( param : ParamTypeRef) : Option[string] =
+  ## convenience template for accessing the first parameter (index 0)
   param[0].fetchString
 
 template fetchString*( param : ParamTypeRef, rownum : int) : Option[string] =
   param[rownum].fetchString
 
-template setString*(param : ParamTypeRef , rownum : int, value : Option[string]) = 
-    ## bind parameter setter string type. for single parameters please set the rownum
-    ## to 0. 
-    if value.isNone:
-      param.buffer.setDbNull
-    else: 
-      param.buffer.setNotDbNull 
-      let str : cstring  = $value.get
-      # todo: eval if setFromBytes is needed. 
-      # possibly not because no getFromBytes present
-      discard dpiVar_setFromBytes(param.paramVar,
-                                  rownum.uint32,
-                                  str,
-                                  str.len.uint32)    
+template setString*(val : ptr dpiData, value : Option[string]) = 
+  ## sets the string of the odpi-data buffer 
+  ## directly (setFromBytes bypassed)
+  if value.isNone:
+    val.setDbNull
+  else:
+    val.setNotDbNull
+    value.get.copyString2DpiData(val)
+
+template setString*(param : ParamTypeRef, value : Option[string]) =
+  param[0].setString(value)
+
+# template setString*(param : ParamTypeRef , rownum : int, value : Option[string]) = 
+#    ## bind parameter setter string type. for single parameters please set the rownum
+#    ## to 0. 
+#    if value.isNone:
+#      param.buffer[rownum].setDbNull
+#    else: 
+#      param.buffer[rownum].setNotDbNull 
+#      let str : cstring  = $value.get
+#      # todo: eval if setFromBytes is needed. 
+#      # possibly not because no getFromBytes present
+#      discard dpiVar_setFromBytes(param.paramVar,
+#                                  rownum.uint32,
+#                                  str,
+#                                  str.len.uint32)    
 
 template fetchBytes*( val : ptr dpiData ) : Option[seq[byte]] =
     ## fetches the specified value as seq[byte]. the byte array is copied
@@ -206,21 +220,29 @@ template fetchBytes*( val : ptr dpiData ) : Option[seq[byte]] =
       some(toNimByteSeq(val))
 
 template fetchBytes*( param : ParamTypeRef ) : Option[seq[byte]] =
+  ## convenience template for fetching the value at position 0
   param[0].fetchBytes
 
-template setBytes*(param : ParamTypeRef , rownum : int = 0, value: Option[seq[byte]]) = 
-    ## bind parameter setter seq[byte] type. this setter operates always with index 0
-    ## the value is copied into the drivers domain 
-    if value.isNone:
-      param.buffer.setDbNull
-    else:
-      param.buffer.setNotDbNull  
-      let seqb : seq[byte] = value.get
-      let cstr = cast[cstring](unsafeAddr(seqb[0]))
-      discard dpiVar_setFromBytes(param.paramVar,
-                                  rownum.uint32,
-                                  cstr,
-                                  seqb.len.uint32)    
+template setBytes*( val : ptr dpiData, value : Option[seq[byte]] ) = 
+  if value.isNone:
+    val.setDbNull
+  else:
+    val.setNotDbNull
+    value.get.copySeq2Data(val)
+
+# template setBytes*(param : ParamTypeRef , rownum : int = 0, value: Option[seq[byte]]) = 
+#    ## bind parameter setter seq[byte] type. this setter operates always with index 0
+#    ## the value is copied into the drivers domain 
+#    if value.isNone:
+#      param.buffer[rownum].setDbNull
+#    else:
+#      param.buffer[rownum].setNotDbNull  
+#      let seqb : seq[byte] = value.get
+#      let cstr = cast[cstring](unsafeAddr(seqb[0]))
+#      discard dpiVar_setFromBytes(param.paramVar,
+#                                  rownum.uint32,
+#                                  cstr,
+#                                  seqb.len.uint32)    
     
 template fetchRowId*( param : ptr dpiData ) : ptr dpiRowid =
     ## fetches the rowId (internal representation).

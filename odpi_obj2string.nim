@@ -88,4 +88,10 @@ proc `$`*(p: Option[float64]): string =
     "<dbNull>"
   else:
     $p.get    
+
+proc `$`*(p: Option[DateTime]): string =
+  if p.isNone:
+    "<dbNull>"
+  else:
+    $p.get    
     
