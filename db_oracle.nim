@@ -180,7 +180,6 @@ type
   # type alias
 
   DpiRowElement* = tuple[columnType: ColumnType,
-                          columnName: string,
                           data: ptr dpiData]
     ## contains the columnType and the datapointer to the
     ## resultSets cell. the data can be fetched with the 
@@ -194,8 +193,16 @@ type
     relatedConn : OracleConnection
     baseHdl : ptr dpiObjectType
     objectTypeInfo : dpiObjectTypeInfo
+    attributes : seq[ptr dpiObjectAttr]
     columnTypeList : ColumnTypeList
 
+  OracleObj* = object
+    ## wrapper for an object instance
+    objType : OracleObjType
+    objHdl : ptr dpiObject
+    paramVar : ptr dpiVar
+    buffer : ptr dpiData
+    
   Lob* = object
     lobtype : ParamType
     chunkSize : uint32
@@ -226,7 +233,7 @@ template `[]`*(row: DpiRow, colname: string): DpiRowElement =
   ## if the column name is not present an empty row is returned
   var rowelem: DpiRowElement
   for i in row.low .. row.high:
-    if cmp(colname, row[i].columnName) == 0:
+    if cmp(colname, row[i].columnType.name) == 0:
       rowelem = row[i]
       break;
   rowelem
@@ -881,7 +888,7 @@ iterator resultSetRowIterator*(rs: var ResultSet): DpiRow =
   ## in an error case an IOException is thrown with the error message retrieved
   ## out of the context.
   var p: DpiRow = newSeq[DpiRowElement](rs.rsOutputCols.len)
-  var paramtypes = rs.getColumnTypeList
+  var coltypes = rs.getColumnTypeList
   rs.rsCurrRow = 0
   rs.rsRowsFetched = 0
 
@@ -889,9 +896,10 @@ iterator resultSetRowIterator*(rs: var ResultSet): DpiRow =
   
   while rs.rsCurrRow < rs.rsRowsFetched:
     for i in rs.rsOutputCols.low .. rs.rsOutputCols.high:
-      p[i] = (columnType: paramtypes[i],
-              columnname: rs.rsColumnNames[i],
+      p[i] = (columnType: coltypes[i],
               data: rs.rsOutputCols[i][rs.rsCurrRow])
+              # FIXME: remove coltypes - these can be obtained
+              # via the resultSet directly
       # construct column
     yield p
     inc rs.rsCurrRow
@@ -986,7 +994,8 @@ proc executeDDL*(conn: var OracleConnection,
 
 proc lookupObjectType*(conn : var OracleConnection,
                        typeName : string) : OracleObjType = 
-  ## database-object-type lookup - needed for variable-object-binding 
+  ## database-object-type lookup - needed for variable-object-binding.
+  ## the returned OracleObjType is always bound to a specific connection
   let tname : cstring = $typeName
   result.relatedConn = conn
   if DpiResult(dpiConn_getObjectType(conn.connection,
@@ -1006,13 +1015,13 @@ proc lookupObjectType*(conn : var OracleConnection,
   result.columnTypeList = newSeq[ColumnType](objinfo.numAttributes)
   # setup attribute list
 
-  var rawAttrs : seq[ptr dpiObjectAttr] = 
+  result.attributes = 
     newSeq[ptr dpiObjectAttr](objinfo.numAttributes)
 
   if DpiResult(dpiObjectType_getAttributes(
                                            result.baseHdl,
                                            objinfo.numAttributes,
-                                           rawAttrs[0].addr
+                                           result.attributes[0].addr
   )).isFailure:
     raise newException(IOError, "lookupAttributes: " &
                               getErrstr(conn.context.oracleContext))
@@ -1021,7 +1030,7 @@ proc lookupObjectType*(conn : var OracleConnection,
   var attrInfo : dpiObjectAttrInfo
 
   for i in result.columnTypeList.low .. result.columnTypeList.high:
-    discard dpiObjectAttr_getInfo(rawAttrs[i],attrInfo.addr)
+    discard dpiObjectAttr_getInfo(result.attributes[i],attrInfo.addr)
     result.columnTypeList[i] = (DpiNativeCType(attrInfo.typeInfo.defaultNativeTypeNum),
                                              DpiOracleType(attrInfo.typeInfo.oracleTypeNum),
                                              attrInfo.typeInfo.clientSizeInBytes.int,
@@ -1031,17 +1040,46 @@ proc lookupObjectType*(conn : var OracleConnection,
                                              attrInfo.typeInfo.precision,
                                              attrInfo.typeInfo.fsPrecision
                                              )
-    discard dpiObjectAttr_release(rawAttrs[i])
-
   return result                              
  
 proc releaseObjectType( objType : OracleObjType ) = 
   ## releases the object type obtained by lookupObjectType
+
+  # release attributes
+  for i in objType.attributes.low .. objType.attributes.high:
+    if DpiResult(dpiObjectAttr_release(objType.attributes[i])).isFailure:
+      raise newException(IOError, "releaseObjectType: " &
+                            getErrstr(objType.relatedConn.context.oracleContext))
+      {.effects.}
+ 
+  # release base handle
   if DpiResult(dpiObjectType_release(objType.baseHdl)).isFailure:
     raise newException(IOError, "releaseObjectType: " &
                             getErrstr(objType.relatedConn.context.oracleContext))
     {.effects.}
 
+proc newOracleObject( objType : OracleObjType ) : OracleObj = 
+  ## create a new oracle object out of the OracleObjType which can be used
+  ## for binding(todo:eval) or reading/fetching from the database.
+  if DpiResult(dpiObjectType_createObject(objType.baseHdl,result.objHdl.addr)).isFailure:
+     raise newException(IOError, "newOracleObject: " &
+       getErrstr(objType.relatedConn.context.oracleContext))
+     {.effects.}
+  
+  return result
+
+proc releaseOracleObject( obj : OracleObj ) = 
+  ## releases the objects internal references
+  if DpiResult(dpiObject_release(obj.objHdl)).isFailure:
+    raise newException(IOError, "releaseOracleObject: " &
+      getErrstr(obj.objType.relatedConn.context.oracleContext))
+    {.effects.}
+
+  # TODO: release paramVars if bound
+
+proc bindOracleObject(pstmt : var PreparedStatement , obj : var OracleObj ) =
+  ## FIXME: implement 
+  discard
 
 proc newTempLob*( conn : var OracleConnection, 
                   lobtype : DpiLobType, 
@@ -1272,10 +1310,10 @@ when isMainModule:
       for i,bufferRowIdx in pstmt3.bulkBindIterator(rset,7,2):
         pstmt3[1.BindIdx][bufferRowIdx].setString(some("test_äüö" & $(i+13))) #pk
         pstmt3[2.BindIdx][bufferRowIdx].setInt64(some(i.int64))
-        pstmt3[3.BindIdx][bufferRowIdx].setBytes(none(seq[byte]))
-        pstmt3[4.BindIdx][bufferRowIdx].setFloat(none(float32))
-        pstmt3[5.BindIdx][bufferRowIdx].setDouble(none(float64))
-        pstmt3[6.BindIdx][bufferRowIdx].setDateTime(none(DateTime))
+        pstmt3[3.BindIdx][bufferRowIdx].setBytes(none(seq[byte]))   # dbNull
+        pstmt3[4.BindIdx][bufferRowIdx].setFloat(none(float32))     # dbNull
+        pstmt3[5.BindIdx][bufferRowIdx].setDouble(none(float64))    # dbNull
+        pstmt3[6.BindIdx][bufferRowIdx].setDateTime(none(DateTime)) # dbNull
 
 
 
