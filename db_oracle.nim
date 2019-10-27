@@ -117,7 +117,10 @@ type
                       dbType: DpiOracleType,
                       colsize: int,
                       sizeIsBytes: bool,
-                      scale: int] # scale used for some numeric types
+                      scale: int8,
+                      name : string,
+                      precision : int16,
+                      fsPrecision : int16 ] # scale used for some numeric types
   ColumnTypeList* = seq[ColumnType]
   # predefined column types
 
@@ -125,22 +128,21 @@ const
   NlsLangDefault = "UTF8".NlsLang
   RefCursorColumnTypeParam* = (DpiNativeCType.STMT,
                                DpiOracleType.OTSTMT,
-                               1, false, 1)
+                               1, false, 1.int8,"",0.int16,0.int16).ColumnType
   ## predefined parameter for refcursor                                 
   Int64ColumnTypeParam* = (DpiNativeCType.INT64,
                            DpiOracleType.OTNUMBER,
-                           1, false, 1)
+                           1, false, 1.int8,"",0.int16,0.int16).ColumnType
   FloatColumnTypeParam* = (DpiNativeCType.FLOAT,
                            DpiOracleType.OTNATIVE_FLOAT,
-                           1,false,0)
-
+                           1,false,0.int8,"",0.int16,0.int16).ColumnType
   DoubleColumnTypeParam* = ( DpiNativeCType.DOUBLE,
                            DpiOracleType.OTNATIVE_DOUBLE,
-                           1,false,0)
-
+                           1,false,0.int8,"",0.int16,0.int16).ColumnType
   ZonedTimestampTypeParam* = (DpiNativeCType.TIMESTAMP,
                             DpiOracleType.OTTIMESTAMP_TZ,
-                            1,false,0)                         
+                            1,false,0.int8,"",0.int16,0.int16).ColumnType
+  # FIXME: populate scale, precision for fp-types                                                   
 
   ## predefined Int64 Type                              
   # TODO: use dpiStmt_executeMany for bulk binds
@@ -187,6 +189,13 @@ type
     ## contains the DpiRowElements of the current iterated row
     ## of the ResultSet
 
+  OracleObjType* = object
+    ## wrapper for the object type database handles
+    relatedConn : OracleConnection
+    baseHdl : ptr dpiObjectType
+    objectTypeInfo : dpiObjectTypeInfo
+    columnTypeList : ColumnTypeList
+
   Lob* = object
     lobtype : ParamType
     chunkSize : uint32
@@ -202,11 +211,15 @@ include nimtype_to_odpi
 
 template newStringColTypeParam(strlen: int): ColumnType =
   ## helper to construct a string ColumnType with specified len
-  (DpiNativeCType.BYTES, DpiOracleType.OTVARCHAR, strlen, false, 0)
+  (DpiNativeCType.BYTES, DpiOracleType.OTVARCHAR, strlen, false, 0.int8,
+   "",0.int16,0.int16
+  )
 
 template newRawColTypeParam(bytelen: int): ColumnType =
   ## helper to construct a string ColumnType with specified len
-  (DpiNativeCType.BYTES, DpiOracleType.OTRAW,bytelen,true, 0)
+  (DpiNativeCType.BYTES, DpiOracleType.OTRAW,bytelen,true, 0.int8,
+   "",0.int16,0.int16
+  )
 
 template `[]`*(row: DpiRow, colname: string): DpiRowElement =
   ## access of the iterators DpiRowElement by column name.
@@ -337,10 +350,10 @@ proc newOracleContext*(outCtx: var OracleContext,
       $ei )
     {.effects.} 
 
-template getErrstr*(ocontext: var OracleContext): string =
+template getErrstr(ocontext: ptr dpiContext): string =
   ## checks if the last operation results with error or not
   var ei: dpiErrorInfo
-  dpiContext_getError(ocontext.oracleContext, ei.addr)
+  dpiContext_getError(ocontext, ei.addr)
   $ei
     
 proc destroyOracleContext*(ocontext: var OracleContext) =
@@ -349,7 +362,7 @@ proc destroyOracleContext*(ocontext: var OracleContext) =
   # TODO: evaluate what happens if there are open connections present
   if DpiResult(dpiContext_destroy(ocontext.oracleContext)).isFailure:
     raise newException(IOError, "newOracleContext: " &
-      getErrstr(ocontext))
+      getErrstr(ocontext.oracleContext))
     {.effects.}
 
 proc createConnection*(octx: var OracleContext,
@@ -368,19 +381,19 @@ proc createConnection*(octx: var OracleContext,
     octx.commonParams.addr, octx.connectionParams.addr, addr(
         ocOut.connection))).isFailure:
     raise newException(IOError, "createConnection: " &
-        getErrstr(octx))
+        getErrstr(octx.oracleContext))
     {.effects.}
   else:
     if DpiResult(dpiConn_setStmtCacheSize(ocOut.connection,stmtCacheSize.uint32)).isFailure:
       raise newException(IOError, "createConnection: " &
-      getErrstr(octx))
+      getErrstr(octx.oracleContext))
     {.effects.}
 
 proc releaseConnection*(conn: var OracleConnection) =
   ## releases the connection
   if DpiResult(dpiConn_release(conn.connection)).isFailure:
     raise newException(IOError, "createConnection: " &
-      getErrstr(conn.context))
+      getErrstr(conn.context.oracleContext))
     {.effects.}
  
 proc terminateExecution*(conn : var OracleConnection)  =
@@ -388,7 +401,7 @@ proc terminateExecution*(conn : var OracleConnection)  =
   ## associated to the given connection
   if DpiResult(dpiConn_breakExecution(conn.connection)).isFailure:
     raise newException(IOError, "terminateExecution: " &
-      getErrstr(conn.context))
+      getErrstr(conn.context.oracleContext))
     {.effects.}
 
 proc setDbOperationAttribute*(conn : var OracleConnection,attribute : string) =
@@ -396,7 +409,7 @@ proc setDbOperationAttribute*(conn : var OracleConnection,attribute : string) =
   if DpiResult(dpiConn_setDbOp(conn.connection, 
                $(attribute.cstring),attribute.len.uint32)).isFailure:
     raise newException(IOError, "setDbOperationAttribute: " &
-      getErrstr(conn.context))
+      getErrstr(conn.context.oracleContext))
     {.effects.}
           
 proc subscribe(conn : var OracleConnection, 
@@ -407,7 +420,7 @@ proc subscribe(conn : var OracleConnection,
   if DpiResult(dpiConn_subscribe(conn.connection, 
                      params,outSubscr)).isFailure:
     raise newException(IOError, "subscribe: " &
-      getErrstr(conn.context))
+      getErrstr(conn.context.oracleContext))
     {.effects.}
                 
 proc unsubscribe(conn : var OracleConnection, subscription : ptr dpiSubscr) =
@@ -415,7 +428,7 @@ proc unsubscribe(conn : var OracleConnection, subscription : ptr dpiSubscr) =
   # TODO: test missing
   if DpiResult(dpiConn_unsubscribe(conn.connection,subscription)).isFailure:
     raise newException(IOError, "unsubscribe: " &
-      getErrstr(conn.context))
+      getErrstr(conn.context.oracleContext))
     {.effects.}
     
 proc newPreparedStatement*(conn: var OracleConnection,
@@ -440,7 +453,7 @@ proc newPreparedStatement*(conn: var OracleConnection,
       outPs.query.len.uint32, outPs.stmtCacheKey,
       outPs.stmtCacheKey.len.uint32, outPs.pStmt.addr)).isFailure:
     raise newException(IOError, "newPreparedStatement: " &
-      getErrstr(conn.context))
+      getErrstr(conn.context.oracleContext))
     {.effects.}
 
   if DpiResult(dpiStmt_setFetchArraySize(
@@ -448,7 +461,7 @@ proc newPreparedStatement*(conn: var OracleConnection,
                                          bufferedRows.uint32)
       ).isFailure:
     raise newException(IOError, "newPreparedStatement: " &
-      getErrstr(conn.context))
+      getErrstr(conn.context.oracleContext))
     {.effects.}
 
 proc newPreparedStatement*(conn: var OracleConnection,
@@ -464,7 +477,7 @@ template releaseParameter(ps : var PreparedStatement, param : ParamTypeRef) =
   if DpiResult(dpiVar_release(param.paramVar)).isFailure:
     raise newException(IOError, " releaseParameter: " &
     "error while calling dpiVar_release : " & getErrstr(
-        ps.relatedConn.context))
+        ps.relatedConn.context.oracleContext))
     {.effects.}
 
 template bindParameter(ps: var PreparedStatement, param: ParamTypeRef) =
@@ -487,23 +500,8 @@ template bindParameter(ps: var PreparedStatement, param: ParamTypeRef) =
   )).isFailure:
     raise newException(IOError, "bindParameter: " &
           "error while calling dpiConn_newVar : " & getErrstr(
-              ps.relatedConn.context))
+              ps.relatedConn.context.oracleContext))
     {.effects.}
-
-template newColumnType*(nativeType: DpiNativeCType,
-                     dbType: DpiOracleType,
-                     colsize: int = 1,
-                     sizeIsBytes: bool = false,
-                     scale: int = 1): ColumnType =
-  ## construction proc for the ColumnType type.
-  ## for numerical types colsize is always 1.
-  ## only for varchars,blobs the colsize must
-  ## be set (max). if sizeIsBytes is false,
-  ## the colsize must contain the number of characters not the bytecount.
-  ## TODO: templates for basic nim types
-  (nativeType: nativeType, dbType: dbType,
-   colsize: colsize, sizeIsBytes: sizeIsBytes,
-   scale: scale)
 
 
 proc addBindParameter(ps: var PreparedStatement,
@@ -606,7 +604,7 @@ proc addArrayBindParameter*(ps: var PreparedStatement,
 proc addOutColumn(rs: var ResultSet, columnParam: ParamTypeRef) =
   ## binds out-parameters to the specified resultset according to the
   ## metadata given by the database. used to construct the resultSet.
-  ## throws IOException in case of error
+  ## throws IOException in case of an error
   let index: int = columnParam.bindPosition.paramVal.int-1
   rs.rsOutputCols[index] = columnParam
   bindParameter(rs, columnParam)
@@ -614,7 +612,7 @@ proc addOutColumn(rs: var ResultSet, columnParam: ParamTypeRef) =
                                   (index+1).uint32,
                                   columnParam.paramVar)).isFailure:
     raise newException(IOError, "addOutColumn: " & $columnParam &
-      getErrstr(rs.relatedConn.context))
+      getErrstr(rs.relatedConn.context.oracleContext))
     {.effects.}
 
 
@@ -637,9 +635,8 @@ proc destroy*(prepStmt: var PreparedStatement) =
 proc executeAndInitResultSet(prepStmt: var PreparedStatement,
                          dpiMode: uint32 = DpiModeExec.DEFAULTMODE.ord,
                          isRefCursor: bool ) =
-  # internal proc. initialises the derived ResultSet
-  # from the given preparedStatement by calling execute on it
-  # TODO: reset() needed
+  ## initialises the derived ResultSet
+  ## from the given preparedStatement by calling execute on it
   prepStmt.rsMoreRows = true
   prepStmt.rsRowsFetched = 0
 
@@ -651,7 +648,7 @@ proc executeAndInitResultSet(prepStmt: var PreparedStatement,
                            prepStmt.columnCount.addr)
                   ).isFailure:
         raise newException(IOError, "executeAndInitResultSet: " &
-                getErrstr(prepStmt.relatedConn.context))
+                getErrstr(prepStmt.relatedConn.context.oracleContext))
         {.effects.}              
   else:
     discard dpiStmt_getNumQueryColumns(prepStmt.pStmt,
@@ -661,7 +658,7 @@ proc executeAndInitResultSet(prepStmt: var PreparedStatement,
                                      prepStmt.bufferedRows.uint32)
       ).isFailure:
       raise newException(IOError, "executeAndInitResultSet(refcursor): " &
-        getErrstr(prepStmt.relatedConn.context))
+        getErrstr(prepStmt.relatedConn.context.oracleContext))
       {.effects.}
 
   if prepStmt.rsOutputCols.len <= 0:
@@ -669,15 +666,25 @@ proc executeAndInitResultSet(prepStmt: var PreparedStatement,
     # only once
     prepStmt.rsOutputCols = newParamTypeList(prepStmt.columnCount.int)
     prepStmt.rsColumnNames = newSeq[string](prepStmt.columnCount.int)
-    discard dpiStmt_getInfo(prepStmt.pStmt, prepStmt.statementInfo.addr)
-
+    if DpiResult(dpiStmt_getInfo(prepStmt.pStmt, 
+                                 prepStmt.statementInfo.addr)).isFailure:
+      raise newException(IOError, "executeAndInitResultSet: " &
+            getErrstr(prepStmt.relatedConn.context.oracleContext))
+      {.effects.}
+                          
     var qInfo: dpiQueryInfo
     for i in countup(1, prepStmt.columnCount.int):
       # extract needed params out of the metadata
       # the columnindex starts with 1
       # TODO: if a type is not supported by ODPI-C
       # log error within the ParamType
-      discard dpiStmt_getQueryInfo(prepStmt.pStmt, i.uint32, qInfo.addr)
+      if DpiResult(dpiStmt_getQueryInfo(prepStmt.pStmt, 
+                                        i.uint32, 
+                                        qInfo.addr)).isFailure:
+        raise newException(IOError, "executeAndInitResultSet: " &
+                          getErrstr(prepStmt.relatedConn.context.oracleContext))
+        {.effects.}
+                                                                           
       var colname = newString(qInfo.nameLength)
       copyMem(addr(colname[0]), qInfo.name.ptr, colname.len)
 
@@ -691,7 +698,12 @@ proc executeAndInitResultSet(prepStmt: var PreparedStatement,
                                        dbType: DpiOracleType(
                                        qinfo.typeinfo.oracleTypeNum),
                           colSize: qinfo.typeinfo.clientSizeInBytes.int,
-                          sizeIsBytes: true, scale: qinfo.typeinfo.scale.int),
+                          sizeIsBytes: true, 
+                          scale: qinfo.typeinfo.scale,
+                          name : $qinfo.name,
+                          precision : qinfo.typeinfo.precision,
+                          fsPrecision : qinfo.typeinfo.fsPrecision
+                          ),
                           paramVar: nil,
                           buffer: nil,
                           rowBufferSize: prepStmt.bufferedRows)
@@ -764,7 +776,7 @@ template updateBindParams(prepStmt: var PreparedStatement) =
       if DpiResult(dpiVar_setNumElementsInArray(bp.paramVar,
                                            bp.rowBufferSize.uint32)).isFailure:
         raise newException(IOError, "updateBindParams: " &
-                            getErrstr(prepStmt.relatedConn.context))
+                            getErrstr(prepStmt.relatedConn.context.oracleContext))
         {.effects.}
                           
     if bp.bindPosition.kind == BindInfoType.byPosition:
@@ -774,7 +786,7 @@ template updateBindParams(prepStmt: var PreparedStatement) =
         )
       ).isFailure:
         raise newException(IOError, "updateBindParams: " &
-                  getErrstr(prepStmt.relatedConn.context))
+                  getErrstr(prepStmt.relatedConn.context.oracleContext))
         {.effects.}
 
     elif bp.bindPosition.kind == BindInfoType.byName:
@@ -786,7 +798,7 @@ template updateBindParams(prepStmt: var PreparedStatement) =
       ).isFailure:
         raise newException(IOError, "updateBindParams: " &
                          $bp.bindPosition.paramName &
-                           getErrstr(prepStmt.relatedConn.context))
+                           getErrstr(prepStmt.relatedConn.context.oracleContext))
         {.effects.}  
 
 proc executeStatement*(prepStmt: var PreparedStatement,
@@ -817,7 +829,7 @@ template executeBulkUpdate(prepStmt: var PreparedStatement,
                                   dpimode,
                                   numRows.uint32)).isFailure:
     raise newException(IOError, "executeMany: " &
-           getErrstr(prepStmt.relatedConn.context))
+           getErrstr(prepStmt.relatedConn.context.oracleContext))
     {.effects.}
 
 proc fetchNextRows*(rs: var ResultSet) =
@@ -850,7 +862,7 @@ proc fetchNextRows*(rs: var ResultSet) =
       rs.rsRowsFetched = rowsFetched.int
     else:
       raise newException(IOError, "fetchNextRows: " &
-        getErrstr(rs.relatedConn.context))
+        getErrstr(rs.relatedConn.context.oracleContext))
       {.effects.}
   
 
@@ -938,7 +950,7 @@ template withTransaction*(dbconn: OracleConnection,
       body
       if DpiResult(dpiConn_commit(dbconn.connection)).isFailure:
         raise newException(IOError, "withTransaction: " &
-          getErrstr(rs.relatedConn.context) )
+          getErrstr(rs.relatedConn.context.oracleContext) )
         {.effects.}
     except:
       discard dpiConn_rollback(dbconn.connection)
@@ -972,6 +984,65 @@ proc executeDDL*(conn: var OracleConnection,
       {.effects.}
 
 
+proc lookupObjectType*(conn : var OracleConnection,
+                       typeName : string) : OracleObjType = 
+  ## database-object-type lookup - needed for variable-object-binding 
+  let tname : cstring = $typeName
+  result.relatedConn = conn
+  if DpiResult(dpiConn_getObjectType(conn.connection,
+                                     tname,
+                                     tname.len.uint32,
+                                     result.baseHdl.addr)).isFailure:
+    raise newException(IOError, "lookupObjectType: " &
+      getErrstr(conn.context.oracleContext))
+    {.effects.}
+  var objinfo : dpiObjectTypeInfo  
+  if DpiResult(dpiObjectType_getInfo(result.baseHdl,
+                                     objinfo.addr)).isFailure:
+    raise newException(IOError, "lookupInfoType: " &
+                              getErrstr(conn.context.oracleContext))
+    {.effects.}
+  result.objectTypeInfo = objinfo  
+  result.columnTypeList = newSeq[ColumnType](objinfo.numAttributes)
+  # setup attribute list
+
+  var rawAttrs : seq[ptr dpiObjectAttr] = 
+    newSeq[ptr dpiObjectAttr](objinfo.numAttributes)
+
+  if DpiResult(dpiObjectType_getAttributes(
+                                           result.baseHdl,
+                                           objinfo.numAttributes,
+                                           rawAttrs[0].addr
+  )).isFailure:
+    raise newException(IOError, "lookupAttributes: " &
+                              getErrstr(conn.context.oracleContext))
+    {.effects.}
+
+  var attrInfo : dpiObjectAttrInfo
+
+  for i in result.columnTypeList.low .. result.columnTypeList.high:
+    discard dpiObjectAttr_getInfo(rawAttrs[i],attrInfo.addr)
+    result.columnTypeList[i] = (DpiNativeCType(attrInfo.typeInfo.defaultNativeTypeNum),
+                                             DpiOracleType(attrInfo.typeInfo.oracleTypeNum),
+                                             attrInfo.typeInfo.clientSizeInBytes.int,
+                                             true,
+                                             attrInfo.typeInfo.scale,
+                                             $attrInfo.name,
+                                             attrInfo.typeInfo.precision,
+                                             attrInfo.typeInfo.fsPrecision
+                                             )
+    discard dpiObjectAttr_release(rawAttrs[i])
+
+  return result                              
+ 
+proc releaseObjectType( objType : OracleObjType ) = 
+  ## releases the object type obtained by lookupObjectType
+  if DpiResult(dpiObjectType_release(objType.baseHdl)).isFailure:
+    raise newException(IOError, "releaseObjectType: " &
+                            getErrstr(objType.relatedConn.context.oracleContext))
+    {.effects.}
+
+
 proc newTempLob*( conn : var OracleConnection, 
                   lobtype : DpiLobType, 
                   outlob : var Lob )  = 
@@ -980,7 +1051,7 @@ proc newTempLob*( conn : var OracleConnection,
                lobtype.ord.dpiOracleTypeNum,
                addr(outlob.lobref))).isFailure:
     raise newException(IOError, "createConnection: " &
-      getErrstr(conn.context))
+      getErrstr(conn.context.oracleContext))
     {.effects.}
 
 when isMainModule:
@@ -1049,8 +1120,7 @@ when isMainModule:
   executeStatement(pstmt,rs)
   # execute the statement. if the resulting rows
   # fit into entire window we are done here.
-  var ctl: ColumnTypeList = rs.getColumnTypeList
-
+ 
   for i,ct in rs.columnTypesIterator:
     echo "cname:" & rs.rsColumnNames[i] & " colnumidx: " & 
       $(i+1) & " " & $ct
@@ -1290,6 +1360,28 @@ when isMainModule:
 
   var cleanupDemo : SqlQuery = osql" drop function hr.demo_inout "
   conn.executeDDL(cleanupDemo)
+
+  # lookup object-type
+  var demoCreateObj : SqlQuery = osql"""
+    create or replace type HR.DEMO_OBJ FORCE as object (
+      NumberValue                         number,
+      StringValue                         varchar2(60),
+      FixedCharValue                      char(10),
+      DateValue                           date,
+      TimestampValue                      timestamp 
+    );
+   """
+  conn.executeDDL(demoCreateObj)
+
+  # lookup type and print results
+  let objtype = conn.lookupObjectType("HR.DEMO_OBJ")
+  echo $objtype.columnTypeList
+
+  objtype.releaseObjectType
+
+  var dropDemoObj : SqlQuery = osql" drop type HR.DEMO_OBJ "
+  conn.executeDDL(dropDemoObj)
+
 
   conn.releaseConnection
   destroyOracleContext(octx)

@@ -49,6 +49,14 @@ proc `$`*(p: var BindInfo): string =
     bt = "by_name: "& $p.paramName
   result = "bindinfo: " & bt  
 
+proc `$`*(p: OracleObjType ): string =
+    ## string representation OracleObjType
+    " schema: " & $p.objectTypeInfo.schema & 
+    " name: " & $p.objectTypeInfo.name &
+    " isCollection: " & $p.objectTypeInfo.isCollection & 
+    " numAttributes " & $p.objectTypeInfo.numAttributes &
+    $p.objectTypeInfo.elementTypeInfo 
+
 proc `$`*(p: ParamTypeRef): string =
   result = $p.bindPosition & " " & $p.columnType & " rowbuffersize: " & $p.rowbuffersize
 

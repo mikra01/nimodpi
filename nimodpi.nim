@@ -310,7 +310,7 @@ cOverride:
       sizeInChars*: uint32
       precision*: int16
       scale*: int8
-      fsPrecision*: uint8
+      fsPrecision*: int16
       objectType*: ptr dpiObjectType
 
     # obj used for transferring object attribute information from ODPI-C
