@@ -213,13 +213,13 @@ include odpi_obj2string
 include odpi_to_nimtype
 include nimtype_to_odpi                  
 
-template newStringColTypeParam(strlen: int): ColumnType =
+template newStringColTypeParam*(strlen: int): ColumnType =
   ## helper to construct a string ColumnType with specified len
   (DpiNativeCType.BYTES, DpiOracleType.OTVARCHAR, strlen, false, 0.int8,
    "",0.int16,0.int16
   )
 
-template newRawColTypeParam(bytelen: int): ColumnType =
+template newRawColTypeParam*(bytelen: int): ColumnType =
   ## helper to construct a string ColumnType with specified len
   (DpiNativeCType.BYTES, DpiOracleType.OTRAW,bytelen,true, 0.int8,
    "",0.int16,0.int16
@@ -240,12 +240,13 @@ template `[]`*(row: DpiRow, colname: string): ptr dpiData =
   cellptr
 
 template `[]`*(row: DpiRow, index : int ): ptr dpiData =
-    ## access of the iterators dataCell by index (starts with 0)
-    var cellptr = row.rawRow[index]
-    cellptr  
+  ## access of the iterators dataCell by index (starts with 0)
+  var cellptr = row.rawRow[index]
+  cellptr  
 
 template `[]`(data: ptr dpiData, idx: int): ptr dpiData =
-  ## direct access of a column's cell within the columnbuffer by index
+  ## direct access of a column's cell within the columnbuffer by index.
+  ## internal - used by DpiRow for calculating the ptr
   cast[ptr dpiData]((cast[int](data)) + (sizeof(dpiData)*idx))
 
 
@@ -257,8 +258,8 @@ template `[]`*(rs: ParamTypeRef, rowidx: int): ptr dpiData =
   ## further reading:
   ## https://oracle.github.io/odpi/doc/structs/dpiData.html
   ## Remark: not all type combinations are implemented by ODPI-C
-  cast[ptr dpiData]((cast[int](rs.buffer)) + (sizeof(dpiData)*rowidx))
-
+  rs.buffer[rowidx]
+  
 proc `[]`*(rs: var PreparedStatement, bindidx: BindIdx): ParamTypeRef =
   ## retrieves the paramType for setting the parameter value by index
   ## use the setParam templates for setting the value after that.
@@ -309,11 +310,6 @@ template getColumnCount*(rs: var ResultSet): int =
   ## returns the number of columns for the ResultSet
   rs.rsColumnNames.len
 
-# proc getColumnTypeList*(rs: var ResultSet): ColumnTypeList =
-#  result = newSeq[ColumnType](rs.getColumnCount)
-#  for i in result.low .. result.high:
-#    result[i] = rs[i].columnType
-
 template getColumnType*(rs : var ResultSet, idx : BindIdx) : ColumnType =
   ## fetches the columntype of the resulting column set by index
   rs[idx.int].columnType
@@ -350,7 +346,8 @@ proc newOracleContext*(outCtx: var OracleContext,
                        encoding : NlsLang = NlsLangDefault ) =
   ## constructs a new OracleContext needed to access the database.
   ## if DpiResult.SUCCESS is returned the outCtx is populated.
-  ## In case of an error an IOException is thrown
+  ## In case of an error an IOException is thrown.
+  ## the commonParams createMode is always DPI_MODE_CREATE_THREADED
   var ei: dpiErrorInfo
   if DpiResult(
        dpiContext_create(DPI_MAJOR_VERSION, DPI_MINOR_VERSION, addr(
@@ -402,7 +399,8 @@ proc createConnection*(octx: var OracleContext,
         getErrstr(octx.oracleContext))
     {.effects.}
   else:
-    if DpiResult(dpiConn_setStmtCacheSize(ocOut.connection,stmtCacheSize.uint32)).isFailure:
+    if DpiResult(dpiConn_setStmtCacheSize(ocOut.connection,
+                                          stmtCacheSize.uint32)).isFailure:
       raise newException(IOError, "createConnection: " &
       getErrstr(octx.oracleContext))
     {.effects.}
@@ -482,7 +480,7 @@ proc newPreparedStatement*(conn: var OracleConnection,
       getErrstr(conn.context.oracleContext))
     {.effects.}
 
-proc newPreparedStatement*(conn: var OracleConnection,
+template newPreparedStatement*(conn: var OracleConnection,
     query: var SqlQuery,
     outPs: var PreparedStatement,
     stmtCacheKey: string = "") =
@@ -492,14 +490,16 @@ proc newPreparedStatement*(conn: var OracleConnection,
 
 
 template releaseParameter(ps : var PreparedStatement, param : ParamTypeRef) =
+  ## frees the internal dpiVar resources
   if DpiResult(dpiVar_release(param.paramVar)).isFailure:
     raise newException(IOError, " releaseParameter: " &
     "error while calling dpiVar_release : " & getErrstr(
         ps.relatedConn.context.oracleContext))
     {.effects.}
 
-template bindParameter(ps: var PreparedStatement, param: ParamTypeRef) =
+template newVar(ps: var PreparedStatement, param: ParamTypeRef) =
   # internal template to create a new in/out/inout binding variable
+  # according to the ParamTypeRef's settings
   var isArray: uint32 = 0
   if param.isPlSqlArray:
     isArray = 1
@@ -522,7 +522,7 @@ template bindParameter(ps: var PreparedStatement, param: ParamTypeRef) =
     {.effects.}
 
 
-proc addBindParameter(ps: var PreparedStatement,
+proc newParamTypeRef(ps: var PreparedStatement,
                       bindInfo: BindInfo,
                       coltype: ColumnType,
                       isPlSqlArray: bool,
@@ -534,9 +534,6 @@ proc addBindParameter(ps: var PreparedStatement,
                          rowBufferSize: boundRows,
                          isPlSqlArray: isPlSqlArray,
                          isFetched: false)
-  bindParameter(ps, result)
-  ps.boundParams.add(result)
-
 
 proc addBindParameter*(ps: var PreparedStatement,
                          coltype: ColumnType,
@@ -550,9 +547,11 @@ proc addBindParameter*(ps: var PreparedStatement,
   ## after adding the parameter value can be set with the typed setters
   ## on the ParamType. the type of the parameter is implicit in,out or in/out.
   ## this depends on the underlying query
-  addBindParameter(ps, BindInfo(kind: BindInfoType.byName,
+  result = newParamTypeRef(ps, BindInfo(kind: BindInfoType.byName,
                                 paramName: paramName),
                     coltype,false,1.int)
+  newVar(ps, result)
+  ps.boundParams.add(result)
 
 proc addBindParameter*(ps: var PreparedStatement,
                          coltype: ColumnType,
@@ -566,10 +565,12 @@ proc addBindParameter*(ps: var PreparedStatement,
   ## the parameter value can be set with the typed setters on the ParamType.
   ## the type of the parameter is implicit in,out or in/out.
   ## this depends on the underlying query
-  addBindParameter(ps, BindInfo(kind: BindInfoType.byPosition,
+  result = newParamTypeRef(ps, BindInfo(kind: BindInfoType.byPosition,
                                 paramVal: idx),
                   coltype,false,1.int)
-           
+  newVar(ps, result)
+  ps.boundParams.add(result)
+                           
 proc addArrayBindParameter*(ps: var PreparedStatement,
                        coltype: ColumnType,
                        paramName: string,
@@ -590,10 +591,12 @@ proc addArrayBindParameter*(ps: var PreparedStatement,
       "given rowCount of " & $rowCount & " exceeds the preparedStatements maxBufferedRows" )
     {.effects.}
   
-  addBindParameter(ps, BindInfo(kind: BindInfoType.byName,
+  result = newParamTypeRef(ps, BindInfo(kind: BindInfoType.byName,
                   paramName: paramName),
                   coltype,isPlSqlArray,rowCount)
-
+  newVar(ps, result)
+  ps.boundParams.add(result)
+                
 proc addArrayBindParameter*(ps: var PreparedStatement,
            coltype: ColumnType,
            idx: BindIdx,
@@ -614,26 +617,12 @@ proc addArrayBindParameter*(ps: var PreparedStatement,
       "given rowCount of " & $rowCount & " exceeds the preparedStatements maxBufferedRows" )
     {.effects.}
 
-  addBindParameter(ps, BindInfo(kind: BindInfoType.byPosition,
+  result = newParamTypeRef(ps, BindInfo(kind: BindInfoType.byPosition,
                    paramVal: idx),
                    coltype,isPlSqlArray,rowcount)
-
-
-proc addOutColumn(rs: var ResultSet, columnParam: ParamTypeRef) =
-  ## binds out-parameters to the specified resultset according to the
-  ## metadata given by the database. used to construct the resultSet.
-  ## throws IOException in case of an error
-  let index: int = columnParam.bindPosition.paramVal.int-1
-  rs.rsOutputCols[index] = columnParam
-  bindParameter(rs, columnParam)
-  if DpiResult(dpiStmt_define(rs.pStmt,
-                                  (index+1).uint32,
-                                  columnParam.paramVar)).isFailure:
-    raise newException(IOError, "addOutColumn: " & $columnParam &
-      getErrstr(rs.relatedConn.context.oracleContext))
-    {.effects.}
-
-
+  newVar(ps, result)
+  ps.boundParams.add(result)
+                 
 proc destroy*(prepStmt: var PreparedStatement) =
   ## frees the preparedStatements internal resources.
   ## this should be called if
@@ -727,8 +716,14 @@ proc executeAndInitResultSet(prepStmt: var PreparedStatement,
                           rowBufferSize: prepStmt.bufferedRows)
                           # each out-resultset param owns the rowbuffersize
                           # of the prepared statement
-      addOutColumn(prepStmt, prepStmt.rsOutputCols[i-1])
-
+      newVar(prepStmt,prepStmt.rsOutputCols[i-1])
+      if DpiResult(dpiStmt_define(prepStmt.pStmt,
+                                      (i).uint32,
+                                      prepStmt.rsOutputCols[i-1].paramVar)).isFailure:
+        raise newException(IOError, "addOutColumn: " & $prepStmt.rsOutputCols[i-1] &
+          getErrstr(prepStmt.relatedConn.context.oracleContext))
+        {.effects.}
+    
 template openRefCursor(ps : PreparedStatement, 
                        p : ParamTypeRef,
                        outRefCursor : var ResultSet,
@@ -819,7 +814,7 @@ template updateBindParams(prepStmt: var PreparedStatement) =
                            getErrstr(prepStmt.relatedConn.context.oracleContext))
         {.effects.}  
 
-proc executeStatement*(prepStmt: var PreparedStatement,
+template executeStatement*(prepStmt: var PreparedStatement,
                         outRs: var ResultSet,
                         dpiMode: uint32 = DpiModeExec.DEFAULTMODE.ord) =
   ## the results can be fetched
@@ -850,7 +845,7 @@ template executeBulkUpdate(prepStmt: var PreparedStatement,
            getErrstr(prepStmt.relatedConn.context.oracleContext))
     {.effects.}
 
-proc fetchNextRows*(rs: var ResultSet) =
+template fetchNextRows*(rs: var ResultSet) =
   ## fetches next rows (if present) into the internal buffer.
   ## if DpiResult.FAILURE is returned the internal error could be retrieved
   ## by calling getErrstr on the context.
