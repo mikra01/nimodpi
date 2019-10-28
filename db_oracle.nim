@@ -179,13 +179,10 @@ type
   ResultSet* = PreparedStatement
   # type alias
 
-  DpiRowElement* = tuple[columnType: ColumnType,
-                          data: ptr dpiData]
-    ## contains the columnType and the datapointer to the
-    ## resultSets cell. the data can be fetched with the 
-    ## fetch-signature templates.                         
-  DpiRow* = seq[DpiRowElement]
-    ## contains the DpiRowElements of the current iterated row
+  DpiRow* = object
+    rset : ResultSet 
+    rawRow : seq[ptr dpiData]
+    ## contains all data pointers of the current iterated row
     ## of the ResultSet
 
   OracleObjType* = object
@@ -228,23 +225,29 @@ template newRawColTypeParam(bytelen: int): ColumnType =
    "",0.int16,0.int16
   )
 
-template `[]`*(row: DpiRow, colname: string): DpiRowElement =
-  ## access of the iterators DpiRowElement by column name.
-  ## if the column name is not present an empty row is returned
-  var rowelem: DpiRowElement
-  for i in row.low .. row.high:
-    if cmp(colname, row[i].columnType.name) == 0:
-      rowelem = row[i]
+template `[]`*(rs: var ResultSet, colidx: int): ParamTypeRef =
+  ## selects the column of the resultSet.
+  rs.rsOutputCols[colidx]
+
+template `[]`*(row: DpiRow, colname: string): ptr dpiData =
+  ## access of the iterators dataCell by column name.
+  ## if the column name is not present an nil ptr is returned
+  var cellptr : ptr dpiData = cast[ptr dpiData](0)
+  for i in row.rawRow.low .. row.rawRow.high:
+    if cmp(colname, row.rset.rsOutputCols[i].columnType.name) == 0:
+      cellptr = row.rawRow[i]
       break;
-  rowelem
+  cellptr
+
+template `[]`*(row: DpiRow, index : int ): ptr dpiData =
+    ## access of the iterators dataCell by index (starts with 0)
+    var cellptr = row.rawRow[index]
+    cellptr  
 
 template `[]`(data: ptr dpiData, idx: int): ptr dpiData =
   ## direct access of a column's cell within the columnbuffer by index
   cast[ptr dpiData]((cast[int](data)) + (sizeof(dpiData)*idx))
 
-template `[]`*(rs: var ResultSet, colidx: int): ParamTypeRef =
-  ## selects the column of the resultSet.
-  rs.rsOutputCols[colidx]
 
 template `[]`*(rs: ParamTypeRef, rowidx: int): ptr dpiData =
   ## selects the row of the specified column
@@ -306,10 +309,18 @@ template getColumnCount*(rs: var ResultSet): int =
   ## returns the number of columns for the ResultSet
   rs.rsColumnNames.len
 
-proc getColumnTypeList*(rs: var ResultSet): ColumnTypeList =
-  result = newSeq[ColumnType](rs.getColumnCount)
-  for i in result.low .. result.high:
-    result[i] = rs[i].columnType
+# proc getColumnTypeList*(rs: var ResultSet): ColumnTypeList =
+#  result = newSeq[ColumnType](rs.getColumnCount)
+#  for i in result.low .. result.high:
+#    result[i] = rs[i].columnType
+
+template getColumnType*(rs : var ResultSet, idx : BindIdx) : ColumnType =
+  ## fetches the columntype of the resulting column set by index
+  rs[idx.int].columnType
+
+template getBoundColumnType*( ps : var PreparedStatement, idx : BindIdx) : ColumnType =
+  ## fetches the columntype of a bound parameter by index
+  ps.boundParams[idx.int].columnType
 
 template getNativeType*(pt: ParamTypeRef): DpiNativeCType =
   ## peeks the native type of a param. useful to determine
@@ -872,12 +883,10 @@ proc fetchNextRows*(rs: var ResultSet) =
         getErrstr(rs.relatedConn.context.oracleContext))
       {.effects.}
   
-
 iterator columnTypesIterator*(rs : var ResultSet) : tuple[idx : int, ct: ColumnType] = 
   ## iterates over the resultSets columnTypes if present
-  var ctl: ColumnTypeList = rs.getColumnTypeList
-  for i in countup(ctl.low,ctl.high):
-    yield (i,ctl[i])
+  for i in countup(rs.rsOutputCols.low,rs.rsOutputCols.high):
+    yield (i,rs[i].columnType)
 
 iterator resultSetRowIterator*(rs: var ResultSet): DpiRow =
   ## iterates over the resultset row by row. no data copy is performed
@@ -887,8 +896,8 @@ iterator resultSetRowIterator*(rs: var ResultSet): DpiRow =
   ## it's already used internally.
   ## in an error case an IOException is thrown with the error message retrieved
   ## out of the context.
-  var p: DpiRow = newSeq[DpiRowElement](rs.rsOutputCols.len)
-  var coltypes = rs.getColumnTypeList
+  var p: DpiRow = DpiRow(rawRow : newSeq[ptr dpiData](rs.rsOutputCols.len), 
+                         rSet : rs)
   rs.rsCurrRow = 0
   rs.rsRowsFetched = 0
 
@@ -896,10 +905,7 @@ iterator resultSetRowIterator*(rs: var ResultSet): DpiRow =
   
   while rs.rsCurrRow < rs.rsRowsFetched:
     for i in rs.rsOutputCols.low .. rs.rsOutputCols.high:
-      p[i] = (columnType: coltypes[i],
-              data: rs.rsOutputCols[i][rs.rsCurrRow])
-              # FIXME: remove coltypes - these can be obtained
-              # via the resultSet directly
+      p.rawRow[i] = rs.rsOutputCols[i][rs.rsCurrRow]
       # construct column
     yield p
     inc rs.rsCurrRow
@@ -1167,12 +1173,13 @@ when isMainModule:
     # the result iterator fetches internally further
     # rows if present 
     # example of value retrieval by columnname or index
-    echo $fetchRowId(row[0].data) &
-    " " & $fetchDouble(row[1].data) &
-    " " & $fetchString(row["FIRST_NAME"].data) &
-    " " & $fetchString(row["LAST_NAME"].data) &
-    " " & $fetchInt64(row[10].data) &
-    " " & $fetchInt64(row[11].data)
+
+    echo $row[0].fetchRowId &
+    " " & $row[1].fetchDouble &
+    " " & $row["FIRST_NAME"].fetchString &
+    " " & $row["LAST_NAME"].fetchString &
+    " " & $row[10].fetchInt64 &
+    " " & $row[11].fetchInt64
 
   echo "query1 executed - param department_id = 80 "
   # reexecute preparedStatement with a different parameter value
@@ -1183,12 +1190,12 @@ when isMainModule:
 
   for row in resultSetRowIterator(rs):
     # retrieve column values by columnname or index
-    echo $fetchRowId(row[0].data) &
-      " " & $fetchDouble(row[1].data) &
-      " " & $fetchString(row["FIRST_NAME"].data) &
-      " " & $fetchString(row["LAST_NAME"].data) &
-      " " & $fetchInt64(row[10].data) &
-      " " & $fetchInt64(row[11].data)
+    echo $row[0].fetchRowId &
+      " " & $row[1].fetchDouble &
+      " " & $row["FIRST_NAME"].fetchString &
+      " " & $row["LAST_NAME"].fetchString &
+      " " & $row[10].fetchInt64 &
+      " " & $row[11].fetchInt64
   
   echo "query1 executed 2nd run - param department_id = 10 "
 
@@ -1233,7 +1240,7 @@ when isMainModule:
     # opens the refcursor. once consumed it can't be reopended (TODO: check
     # if that's a ODPI-C limitation)
     for row in resultSetRowIterator(refc):
-      echo $fetchString(row[0].data)
+      echo $row[0].fetchString
 
     echo "refCursor 2 results: filter with department_id = 80 "
 
@@ -1241,7 +1248,7 @@ when isMainModule:
     pstmt2.openRefCursor("refc2", refc2, 10, DpiModeExec.DEFAULTMODE.ord)
 
     for row in resultSetRowIterator(refc2):
-      echo $fetchString(row[0].data) & " " & $fetchString(row[1].data)
+      echo $row[0].fetchString & " " & $row[1].fetchString
 
   var ctableq = osql""" CREATE TABLE HR.DEMOTESTTABLE(
                         C1 VARCHAR2(20) NOT NULL 
@@ -1330,11 +1337,11 @@ when isMainModule:
   withPreparedStatement(pstmt4): 
     pstmt4.executeStatement(rset4)
     for row in resultSetRowIterator(rset4):       
-      echo $fetchString(row[0].data) & "  " & $fetchInt64(row[1].data) & 
-            " " & $fetchString(row[2].data) & 
+      echo $row[0].fetchString & "  " & $row[1].fetchInt64 & 
+            " " & $row[2].fetchString & 
           # " "  & $fetchFloat(row[3].data) &
           # TODO: eval float32 vals 
-            " " & $fetchDouble(row[4].data) & " " & $(fetchDateTime(row[5].data))
+            " " & $row[4].fetchDouble & " " & $row[5].fetchDateTime
           # FIXME: fetchFloat returns wrong values / dont work as expected
   echo "finished fetching" 
       # drop the table
