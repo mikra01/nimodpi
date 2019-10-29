@@ -190,8 +190,11 @@ type
     relatedConn : OracleConnection
     baseHdl : ptr dpiObjectType
     objectTypeInfo : dpiObjectTypeInfo
+    isCollection : bool
     attributes : seq[ptr dpiObjectAttr]
     columnTypeList : ColumnTypeList
+    # columnTypeList and attributes are in the
+    # same order
 
   OracleObj* = object
     ## wrapper for an object instance
@@ -923,9 +926,16 @@ iterator bulkBindIterator*(pstmt: var PreparedStatement,
   ## with 0 
   if maxRows < maxRowBufferWindow:
     raise newException(IOError,"bulkBindIterator: " &
-      "constraint maxRows < maxRowBufferIdx violated " )
+      "constraint maxRows < maxRowBufferWindow violated " )
     {.effects.}  
   
+  if pstmt.bufferedRows < maxRowBufferWindow:
+    raise newException(IOError,"bulkBindIterator: " &
+      "constraint bufferedRows < maxRowBufferWindow violated. " & 
+      " bufferdRows are: " & $pstmt.bufferedRows & " and maxRowBufferWindow" &
+      " is: " & $maxRowBufferWindow )
+    {.effects.}  
+
   pstmt.resetParamRows
   # reset the parameter rows to the preparedstatements window
 
@@ -1012,7 +1022,13 @@ proc lookupObjectType*(conn : var OracleConnection,
     raise newException(IOError, "lookupInfoType: " &
                               getErrstr(conn.context.oracleContext))
     {.effects.}
-  result.objectTypeInfo = objinfo  
+  result.objectTypeInfo = objinfo
+
+  if objinfo.isCollection == 1:
+    result.isCollection = true
+  else: 
+    result.isCollection = false
+  
   result.columnTypeList = newSeq[ColumnType](objinfo.numAttributes)
   # setup attribute list
 
@@ -1077,6 +1093,31 @@ proc releaseOracleObject( obj : OracleObj ) =
     {.effects.}
 
   # TODO: release paramVars if bound
+  # int dpiObject_getAttributeValue(dpiObject *obj, dpiObjectAttr *attr, dpiNativeTypeNum nativeTypeNum, dpiData *value)¶
+  # int dpiObject_setAttributeValue(dpiObject *obj, dpiObjectAttr *attr, dpiNativeTypeNum nativeTypeNum, dpiData *value)¶
+
+proc getAttributeValue( obj : OracleObj, idx : int ) : ptr dpiData = 
+  ## getAttributeValue by index as specified in the ColumnTypeList
+  discard
+
+proc getAttributeValue( obj : OracleObj, attrName : string ) : ptr dpiData = 
+  ## getAttributeValue by attributeName as specified in the ColumnTypeList
+  discard
+
+proc setAttributeValue( obj : OracleObj, idx : int , data : ptr dpiData ) =
+  # the data ptr can be reused after calling the api 
+  discard
+
+proc setAttributeValue( obj : OracleObj, attrName : string, data : ptr dpiData ) = 
+  # the data ptr can be reused after calling the api
+  discard
+
+# appendElement with type: object (only possible with collection objects?)
+# create the object and call:
+#   dpiData_setObject(&data, obj2); sets the object to the data
+#   dpiObject_appendElement(obj, DPI_NATIVE_TYPE_OBJECT, &data); 
+# to populate a cell call: dpiVar_setFromObject
+#                          dpiVar_getFromObject
 
 proc bindOracleObject(pstmt : var PreparedStatement , obj : var OracleObj ) =
   ## FIXME: implement 
@@ -1264,9 +1305,10 @@ when isMainModule:
 
   var pstmt3 : PreparedStatement
   conn.newPreparedStatement(insertStmt, pstmt3, 10)
-  # bulk insert example. 55 rows are inserted with a buffer
-  # window of 10 rows. the buffer row window is fixed and can't
-  # changed
+  # bulk insert example. 21 rows are inserted with a buffer
+  # window of 9 and 3 rows. 
+  # once the preparedStatement is instanciated - 
+  # the buffer row window is fixed and can't resized
 
   discard pstmt3.addArrayBindParameter(newStringColTypeParam(20),
              BindIdx(1), 10)
@@ -1404,7 +1446,7 @@ when isMainModule:
   # lookup object-type
   var demoCreateObj : SqlQuery = osql"""
     create or replace type HR.DEMO_OBJ FORCE as object (
-      NumberValue                         number,
+      NumberValue                         number(15,8),
       StringValue                         varchar2(60),
       FixedCharValue                      char(10),
       DateValue                           date,
