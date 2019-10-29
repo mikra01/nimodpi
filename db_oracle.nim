@@ -634,12 +634,24 @@ proc destroy*(prepStmt: var PreparedStatement) =
   ## are also freed. a preparedStatement with refCursor can not
   ## be reused.
   for i in prepStmt.boundParams.low .. prepStmt.boundParams.high:
-    discard dpiVar_release(prepStmt.boundParams[i].paramVar)
+    if DpiResult(dpiVar_release(prepStmt.boundParams[i].paramVar)).isFailure:
+      raise newException(IOError, "destroy: " &
+          getErrstr(prepStmt.relatedConn.context.oracleContext))
+      {.effects.}
+    
   for i in prepStmt.rsOutputCols.low .. prepStmt.rsOutputCols.high:
-    discard dpiVar_release(prepStmt.rsOutputCols[i].paramVar)
+    if DpiResult(dpiVar_release(prepStmt.rsOutputCols[i].paramVar)).isFailure:
+      raise newException(IOError, "destroy: " &
+          getErrstr(prepStmt.relatedConn.context.oracleContext))
+      {.effects.}
+      
   prepStmt.boundParams.setLen(0)
   prepStmt.rsOutputCols.setLen(0)
-  discard dpiStmt_release(prepStmt.pStmt)
+
+  if DpiResult(dpiStmt_release(prepStmt.pStmt)).isFailure:
+    raise newException(IOError, "destroy: " &
+      getErrstr(prepStmt.relatedConn.context.oracleContext))
+    {.effects.}
 
                               
 proc executeAndInitResultSet(prepStmt: var PreparedStatement,
