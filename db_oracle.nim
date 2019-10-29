@@ -201,7 +201,7 @@ type
     objType : OracleObjType
     objHdl : ptr dpiObject
     paramVar : ptr dpiVar
-    buffer : ptr dpiData
+    bufferedColumn : seq[ptr dpiData]
     
   Lob* = object
     lobtype : ParamType
@@ -1021,7 +1021,8 @@ proc executeDDL*(conn: var OracleConnection,
 proc lookupObjectType*(conn : var OracleConnection,
                        typeName : string) : OracleObjType = 
   ## database-object-type lookup - needed for variable-object-binding.
-  ## the returned OracleObjType is always bound to a specific connection
+  ## the returned OracleObjType is always bound to a specific connection.
+  ## the typeName can be prefixed with the schemaname the object resides.
   let tname : cstring = $typeName
   result.relatedConn = conn
   if DpiResult(dpiConn_getObjectType(conn.connection,
@@ -1097,41 +1098,87 @@ proc newOracleObject( objType : OracleObjType ) : OracleObj =
      raise newException(IOError, "newOracleObject: " &
        getErrstr(objType.relatedConn.context.oracleContext))
      {.effects.}
-  
+  result.objType = objType
+  # setup buffered columns
+  result.bufferedColumn = newSeq[ptr dpiData](objType.attributes.len)
+  var buffbase = cast[int](alloc0(result.bufferedColumn.len * sizeof(dpiData)))
+  let dpiSize = sizeof(dpiData)
+  for i in result.bufferedColumn.low .. result.bufferedColumn.high:
+    result.bufferedColumn[i] = cast[ptr dpiData](buffbase)
+    buffbase = buffbase + dpiSize
+  # TODO: eval if its better to keep one object values within the type.
+  # a large object count would result needs massive memory. the downside
+  # would be that the get/fetch templates would not work on instances anymore.
   return result
 
 proc releaseOracleObject( obj : OracleObj ) = 
   ## releases the objects internal references
+  dealloc(obj.bufferedColumn[0])
   if DpiResult(dpiObject_release(obj.objHdl)).isFailure:
     raise newException(IOError, "releaseOracleObject: " &
       getErrstr(obj.objType.relatedConn.context.oracleContext))
     {.effects.}
 
-  # TODO: release paramVars if bound
-  # int dpiObject_getAttributeValue(dpiObject *obj, dpiObjectAttr *attr, dpiNativeTypeNum nativeTypeNum, dpiData *value)¶
-  # int dpiObject_setAttributeValue(dpiObject *obj, dpiObjectAttr *attr, dpiNativeTypeNum nativeTypeNum, dpiData *value)¶
 
-proc getAttributeValue( obj : OracleObj, idx : int ) : ptr dpiData = 
-  ## getAttributeValue by index as specified in the ColumnTypeList
-  discard
+template lookUpAttrIndexByName( obj : OracleObj, attrName : string ) : int =
+  ## used by the attributeValue getter/setter to obtain the index by name
+  var ctypeidx = -1
+  for i in obj.objType.columnTypeList.low .. obj.objType.columnTypeList.high:
+    if cmp(attrName, obj.objType.columnTypeList[i].name) == 0:
+      ctypeidx = i
+      break;
+      
+  if ctypeidx == -1:
+    raise newException(IOError, "lookupAttrIndexByName: " &
+          " attrName " & attrName & " not found!")
+    {.effects.}
+  ctypeidx
+    
 
-proc getAttributeValue( obj : OracleObj, attrName : string ) : ptr dpiData = 
-  ## getAttributeValue by attributeName as specified in the ColumnTypeList
-  discard
+proc getAttributeValue( obj : var OracleObj, idx : int ) : ptr dpiData = 
+  ## getAttributePointer by index as specified in the ColumnTypeList
+  let ctype = obj.objType.columnTypeList[idx]
+  let attr = obj.objType.attributes[idx]
+  
+  if DpiResult(dpiObject_getAttributeValue(
+                obj.objHdl,
+                attr,
+                ctype.nativeType.dpiNativeTypeNum,
+                obj.bufferedColumn[idx] )
+               ).isFailure:
+    raise newException(IOError, "getAttributeValue: " &
+      getErrstr(obj.objType.relatedConn.context.oracleContext))
+    {.effects.}
+  
+  return obj.bufferedColumn[idx]
 
-proc setAttributeValue( obj : OracleObj, idx : int , data : ptr dpiData ) =
-  # the data ptr can be reused after calling the api 
-  discard
-
-proc setAttributeValue( obj : OracleObj, attrName : string, data : ptr dpiData ) = 
+proc setAttributeValue( obj : OracleObj, idx: int ) = 
   # the data ptr can be reused after calling the api
-  discard
+  let ctype = obj.objType.columnTypeList[idx]
+  let attr = obj.objType.attributes[idx]
+
+  if DpiResult(dpiObject_setAttributeValue(
+                obj.objHdl,
+                attr,
+                ctype.nativeType.dpiNativeTypeNum,
+                obj.bufferedColumn[idx])
+               ).isFailure:
+    raise newException(IOError, "setAttributeValue: " &
+      getErrstr(obj.objType.relatedConn.context.oracleContext))
+    {.effects.}    
+
+template `[]`*(obj: OracleObj, colidx: int): ptr dpiData =
+  getAttributeValue(obj,colidx)
+
+template `[]`*(obj: OracleObj, attrName: string ): ptr dpiData =
+  getAttributeValue(obj,lookUpAttrIndexByName(obj,attrName))  
+
 
 # appendElement with type: object (only possible with collection objects?)
 # create the object and call:
 #   dpiData_setObject(&data, obj2); sets the object to the data
 #   dpiObject_appendElement(obj, DPI_NATIVE_TYPE_OBJECT, &data); 
-# to populate a cell call: dpiVar_setFromObject
+# to populate a buffer-cell call: dpiVar_setFromObject
 #                          dpiVar_getFromObject
 
 proc bindOracleObject(pstmt : var PreparedStatement , obj : var OracleObj ) =
@@ -1472,8 +1519,14 @@ when isMainModule:
 
   # lookup type and print results
   let objtype = conn.lookupObjectType("HR.DEMO_OBJ")
-  echo $objtype.columnTypeList
+  var obj  = objtype.newOracleObject
+ 
+  obj[0].setDouble(some(100.float64))
+  setAttributeValue(obj,0) # updates attribute to odpi-c
 
+  echo $(obj[0].fetchDouble) # value from buffer
+  echo $getAttributeValue(obj,0).fetchDouble # value from odpi-c
+  
   objtype.releaseObjectType
 
   var dropDemoObj : SqlQuery = osql" drop type HR.DEMO_OBJ "
@@ -1482,4 +1535,3 @@ when isMainModule:
 
   conn.releaseConnection
   destroyOracleContext(octx)
-  
