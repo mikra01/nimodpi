@@ -591,7 +591,8 @@ proc addArrayBindParameter*(ps: var PreparedStatement,
   ## this depends on the underlying query
   if ps.bufferedRows < rowCount:
     raise newException(IOError, "addArrayBindParameter: " &
-      "given rowCount of " & $rowCount & " exceeds the preparedStatements maxBufferedRows" )
+      "given rowCount of " & $rowCount & 
+      " exceeds the preparedStatements maxBufferedRows" )
     {.effects.}
   
   result = newParamTypeRef(ps, BindInfo(kind: BindInfoType.byName,
@@ -617,7 +618,8 @@ proc addArrayBindParameter*(ps: var PreparedStatement,
   ## this depends on the underlying query
   if ps.bufferedRows < rowCount:
     raise newException(IOError, "addArrayBindParameter: " &
-      "given rowCount of " & $rowCount & " exceeds the preparedStatements maxBufferedRows" )
+      "given rowCount of " & $rowCount & 
+      " exceeds the preparedStatements maxBufferedRows" )
     {.effects.}
 
   result = newParamTypeRef(ps, BindInfo(kind: BindInfoType.byPosition,
@@ -733,8 +735,9 @@ proc executeAndInitResultSet(prepStmt: var PreparedStatement,
                           # of the prepared statement
       newVar(prepStmt,prepStmt.rsOutputCols[i-1])
       if DpiResult(dpiStmt_define(prepStmt.pStmt,
-                                      (i).uint32,
-                                      prepStmt.rsOutputCols[i-1].paramVar)).isFailure:
+                                  (i).uint32,
+                                  prepStmt.rsOutputCols[i-1].paramVar)
+                                  ).isFailure:
         raise newException(IOError, "addOutColumn: " & $prepStmt.rsOutputCols[i-1] &
           getErrstr(prepStmt.relatedConn.context.oracleContext))
         {.effects.}
@@ -1479,3 +1482,4 @@ when isMainModule:
 
   conn.releaseConnection
   destroyOracleContext(octx)
+  
