@@ -1075,7 +1075,7 @@ proc lookupObjectType*(conn : var OracleConnection,
                                              )
   return result                              
  
-proc releaseObjectType( objType : OracleObjType ) = 
+proc releaseObjectType*( objType : OracleObjType ) = 
   ## releases the object type obtained by lookupObjectType
 
   # release attributes
@@ -1091,18 +1091,22 @@ proc releaseObjectType( objType : OracleObjType ) =
                             getErrstr(objType.relatedConn.context.oracleContext))
     {.effects.}
 
-proc newOracleObject( objType : OracleObjType ) : OracleObj = 
+proc newOracleObject*( objType : OracleObjType ) : OracleObj = 
   ## create a new oracle object out of the OracleObjType which can be used
   ## for binding(todo:eval) or reading/fetching from the database.
+  ## at the moment subobjects are not implemented (getter/setter adjustment needed)
   if DpiResult(dpiObjectType_createObject(objType.baseHdl,result.objHdl.addr)).isFailure:
      raise newException(IOError, "newOracleObject: " &
        getErrstr(objType.relatedConn.context.oracleContext))
      {.effects.}
   result.objType = objType
+  
   # setup buffered columns
   result.bufferedColumn = newSeq[ptr dpiData](objType.attributes.len)
   var buffbase = cast[int](alloc0(result.bufferedColumn.len * sizeof(dpiData)))
   let dpiSize = sizeof(dpiData)
+
+  # TODO: eval how variable length types are handled (raw/string)
   for i in result.bufferedColumn.low .. result.bufferedColumn.high:
     result.bufferedColumn[i] = cast[ptr dpiData](buffbase)
     buffbase = buffbase + dpiSize
@@ -1111,14 +1115,13 @@ proc newOracleObject( objType : OracleObjType ) : OracleObj =
   # would be that the get/fetch templates would not work on instances anymore.
   return result
 
-proc releaseOracleObject( obj : OracleObj ) = 
-  ## releases the objects internal references
+proc releaseOracleObject*( obj : OracleObj ) = 
+  ## releases the objects internal references and deallocs buffermem
   dealloc(obj.bufferedColumn[0])
   if DpiResult(dpiObject_release(obj.objHdl)).isFailure:
     raise newException(IOError, "releaseOracleObject: " &
       getErrstr(obj.objType.relatedConn.context.oracleContext))
     {.effects.}
-
 
 template lookUpAttrIndexByName( obj : OracleObj, attrName : string ) : int =
   ## used by the attributeValue getter/setter to obtain the index by name
@@ -1136,7 +1139,7 @@ template lookUpAttrIndexByName( obj : OracleObj, attrName : string ) : int =
     
 
 proc getAttributeValue( obj : var OracleObj, idx : int ) : ptr dpiData = 
-  ## getAttributePointer by index as specified in the ColumnTypeList
+  ## internal getter for fetching the type out of the odpic-domain
   let ctype = obj.objType.columnTypeList[idx]
   let attr = obj.objType.attributes[idx]
   
@@ -1153,7 +1156,7 @@ proc getAttributeValue( obj : var OracleObj, idx : int ) : ptr dpiData =
   return obj.bufferedColumn[idx]
 
 proc setAttributeValue( obj : OracleObj, idx: int ) = 
-  # the data ptr can be reused after calling the api
+  ## internal setter for propagating the type into odpi-c domain
   let ctype = obj.objType.columnTypeList[idx]
   let attr = obj.objType.attributes[idx]
 
@@ -1168,10 +1171,10 @@ proc setAttributeValue( obj : OracleObj, idx: int ) =
     {.effects.}    
 
 template `[]`*(obj: OracleObj, colidx: int): ptr dpiData =
-  getAttributeValue(obj,colidx)
+  obj.bufferedColumn[colidx]
 
-template `[]`*(obj: OracleObj, attrName: string ): ptr dpiData =
-  getAttributeValue(obj,lookUpAttrIndexByName(obj,attrName))  
+# template `[]`*(obj: OracleObj, attrName: string ): ptr dpiData =
+#  getAttributeValue(obj,lookUpAttrIndexByName(obj,attrName))  
 
 
 # appendElement with type: object (only possible with collection objects?)
@@ -1408,7 +1411,7 @@ when isMainModule:
         pstmt3[2.BindIdx][bufferRowIdx].setInt64(varc2)
         pstmt3[3.BindIdx][bufferRowIdx].setBytes(some(@[(0xAA+i).byte,0xBB,0xCC]))
         pstmt3[4.BindIdx][bufferRowIdx].setFloat(some(i.float32+0.12.float32))
-        pstmt3[5.BindIdx][bufferRowIdx].setDouble(some(i.float64+99.12345))
+        pstmt3[5.BindIdx][bufferRowIdx].setDouble(some(i.float64+99.12345.float64))
         pstmt3[6.BindIdx][bufferRowIdx].setDateTime(some(getTime().local))
     # example: reuse of preparedStatement and insert another 8 rows
     # with a buffer window of 3 elements 
@@ -1420,7 +1423,6 @@ when isMainModule:
         pstmt3[4.BindIdx][bufferRowIdx].setFloat(none(float32))     # dbNull
         pstmt3[5.BindIdx][bufferRowIdx].setDouble(none(float64))    # dbNull
         pstmt3[6.BindIdx][bufferRowIdx].setDateTime(none(DateTime)) # dbNull
-
 
 
   var selectStmt: SqlQuery = osql"""select c1,c2,rawtohex(c3)
@@ -1521,12 +1523,11 @@ when isMainModule:
   let objtype = conn.lookupObjectType("HR.DEMO_OBJ")
   var obj  = objtype.newOracleObject
  
-  obj[0].setDouble(some(100.float64))
-  setAttributeValue(obj,0) # updates attribute to odpi-c
+  obj.setDouble(0,some(100.float64))
 
   echo $(obj[0].fetchDouble) # value from buffer
-  echo $getAttributeValue(obj,0).fetchDouble # value from odpi-c
-  
+  echo $obj.fetchDouble(0) # value from odpi-c
+
   objtype.releaseObjectType
 
   var dropDemoObj : SqlQuery = osql" drop type HR.DEMO_OBJ "
