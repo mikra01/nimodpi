@@ -1,13 +1,13 @@
-template copyString2DpiData(src : string, dest: ptr dpiData) =
+template copyString2DpiData(src : var string, dest: ptr dpiData) =
   ## copy template into odpi-domain.
-  ## the nimstring is copied into the dpiData struct
-  var s = src
-  copyMem(dest.value.asBytes.ptr,addr(s[0]), s.len)
-  dest.value.asBytes.length = s.len.uint32
+  ## the nimstring is copied into the dpiData structs dbBytes 
+  ## pointer. this memory area is provided by odpi-c (exception: dbiObjectType )
+  copyMem(dest.value.asBytes.ptr,addr(src[0]), src.len) 
+  dest.value.asBytes.length = src.len.uint32
  
-template copySeq2Data(src : seq[byte], dest: ptr dpiData) =
+template copySeq2Data(src : var seq[byte], dest: ptr dpiData) =
   ## copy template into odpi-domain.
-  ## the nim bytesequence is copied into the dpiData struct
-  var s = src
-  copyMem(dest.value.asBytes.ptr,addr(s[0]),s.len)
-  dest.value.asBytes.length = s.len.uint32
+  ## the nim bytesequence is copied into the dbBytes 
+  ## pointer. this memory area is provided by odpi-c (exception: dbiObjectType)
+  copyMem(dest.value.asBytes.ptr,addr(src[0]),src.len)
+  dest.value.asBytes.length = src.len.uint32
