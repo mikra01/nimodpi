@@ -363,7 +363,14 @@ template setString*( param : OracleObj ,
                      index : int,  
                      value : Option[string]) =
   ## access template for db-types
-  param[index].setString(value)
+  var st : string
+  if value.isNone:
+    param[index].setDbNull
+  else:
+    st = value.get
+    param[index].dpiData_setBytes( param[index], 
+                                   addr(st[0]), 
+                                   st.len.uint32 ) 
   setAttributeValue(param,index)
 
 template setString*( param : OracleObj , 
@@ -407,9 +414,17 @@ template setBytes*( param : OracleObj ,
                     index : int,  
                     value : Option[seq[byte]]) =
   ## access template for db-types
-  param[index].setBytes(value)
+  var st : seq[byte]
+  if value.isNone:
+    param[index].setDbNull
+  else:
+    st = value.get
+    param[index].dpiData_setBytes( param[index], 
+                                   addr(st[0]), 
+                                   st.len.uint32 ) 
   setAttributeValue(param,index)
-  
+
+
 template setBytes*(   param : OracleObj , 
                    attrName : string,  
                    value : Option[seq[byte]]) =

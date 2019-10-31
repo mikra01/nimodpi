@@ -20,10 +20,13 @@ import nimodpi
     - some features:
     - resultset zero-copy approach: the caller is responsible
     - for copying the data (helper templates present)
-    - within the application domain. "peeking" data is possible via pointers
+    - within the application domain. "peeking" data is possible via pointers.
+    - copy takes place into odpi-c domain when bindparameter or inserts are used.
+    - 
+    - 
     - only the basic types are implemented (numeric, rowid, varchar2, timestamp)
     - pl/sql procedure exploitation is possible with in/out and inout-parameters
-    - consuming refcursor is also possible (see examples at the end of the file)
+    - consuming refcursor (out) is also possible (see examples at the end of the file)
     - TODO: implement LOB/BLOB handling
     -
     - designing a vendor generic database API often leads to
@@ -102,6 +105,10 @@ type
     # ODPI-C ptr to the variable def
     buffer: ptr dpiData
     # ODPI-C ptr to the data buffer
+    rawHsMemory : ptr byte
+    # raw handshake memory. used for pointer types.
+    # an entire block is allocated according to the maxlen
+    # of the type and the rowbuffersize
     rowBufferSize: int
     isPlSqlArray: bool
     isFetched: bool
@@ -200,7 +207,9 @@ type
     ## wrapper for an object instance
     objType : OracleObjType
     objHdl : ptr dpiObject
+    # the odpi-c object handle
     paramVar : ptr dpiVar
+    # var needed for reading/writing
     bufferedColumn : seq[ptr dpiData]
     
   Lob* = object
@@ -1094,7 +1103,10 @@ proc releaseObjectType*( objType : OracleObjType ) =
 proc newOracleObject*( objType : OracleObjType ) : OracleObj = 
   ## create a new oracle object out of the OracleObjType which can be used
   ## for binding(todo:eval) or reading/fetching from the database.
-  ## at the moment subobjects are not implemented (getter/setter adjustment needed)
+  ## at the moment subobjects are not implemented (getter/setter adjustment needed).
+  ## ODPI-C and internal resources are hold till releaseOracleObject is called.
+  ## variable length references must stay valid till the object sent to the database.
+  ## 
   if DpiResult(dpiObjectType_createObject(objType.baseHdl,result.objHdl.addr)).isFailure:
      raise newException(IOError, "newOracleObject: " &
        getErrstr(objType.relatedConn.context.oracleContext))
@@ -1103,10 +1115,10 @@ proc newOracleObject*( objType : OracleObjType ) : OracleObj =
   
   # setup buffered columns
   result.bufferedColumn = newSeq[ptr dpiData](objType.attributes.len)
-  var buffbase = cast[int](alloc0(result.bufferedColumn.len * sizeof(dpiData)))
+  # alloc one chunk to hold all dpiData structs
+  var buffbase = cast[int](alloc0(objType.attributes.len * sizeof(dpiData)))
   let dpiSize = sizeof(dpiData)
 
-  # TODO: eval how variable length types are handled (raw/string)
   for i in result.bufferedColumn.low .. result.bufferedColumn.high:
     result.bufferedColumn[i] = cast[ptr dpiData](buffbase)
     buffbase = buffbase + dpiSize
@@ -1170,11 +1182,8 @@ proc setAttributeValue( obj : OracleObj, idx: int ) =
       getErrstr(obj.objType.relatedConn.context.oracleContext))
     {.effects.}    
 
-template `[]`*(obj: OracleObj, colidx: int): ptr dpiData =
+template `[]`(obj: OracleObj, colidx: int): ptr dpiData =
   obj.bufferedColumn[colidx]
-
-# template `[]`*(obj: OracleObj, attrName: string ): ptr dpiData =
-#  getAttributeValue(obj,lookUpAttrIndexByName(obj,attrName))  
 
 
 # appendElement with type: object (only possible with collection objects?)
@@ -1351,6 +1360,20 @@ when isMainModule:
     for row in resultSetRowIterator(refc2):
       echo $row[0].fetchString & " " & $row[1].fetchString
 
+
+  # object-type for testing the obj-features
+  # nested obj not implemented at the moment.
+  var demoCreateObj : SqlQuery = osql"""
+    create or replace type HR.DEMO_OBJ FORCE as object (
+      NumberValue                         number(15,8),
+      StringValue                         varchar2(60),
+      FixedCharValue                      char(10),
+      DateValue                           date,
+      TimestampValue                      timestamp 
+    );
+   """
+  conn.executeDDL(demoCreateObj)
+
   var ctableq = osql""" CREATE TABLE HR.DEMOTESTTABLE(
                         C1 VARCHAR2(20) NOT NULL 
                       , C2 NUMBER(5,0)
@@ -1358,6 +1381,7 @@ when isMainModule:
                       , C4 NUMBER(5,3)
                       , C5 NUMBER(15,5)
                       , C6 TIMESTAMP
+                      , C7 HR.DEMO_OBJ
                       , CONSTRAINT DEMOTESTTABLE_PK PRIMARY KEY(C1) 
     ) """ 
  
@@ -1507,17 +1531,12 @@ when isMainModule:
   var cleanupDemo : SqlQuery = osql" drop function hr.demo_inout "
   conn.executeDDL(cleanupDemo)
 
-  # lookup object-type
-  var demoCreateObj : SqlQuery = osql"""
-    create or replace type HR.DEMO_OBJ FORCE as object (
-      NumberValue                         number(15,8),
-      StringValue                         varchar2(60),
-      FixedCharValue                      char(10),
-      DateValue                           date,
-      TimestampValue                      timestamp 
-    );
-   """
-  conn.executeDDL(demoCreateObj)
+
+  # create collection type
+  var demoCreateColl : SqlQuery = osql"""
+    create or replace TYPE HR.DEMO_COLL  IS TABLE OF HR.DEMO_OBJ; """
+
+  conn.executeDDL(demoCreateColl)  
 
   # lookup type and print results
   let objtype = conn.lookupObjectType("HR.DEMO_OBJ")
@@ -1525,10 +1544,17 @@ when isMainModule:
  
   obj.setDouble(0,some(100.float64))
 
-  echo $(obj[0].fetchDouble) # value from buffer
+  echo $(obj[0].fetchDouble) 
+  # not public
+  # value from buffer
+  
   echo $obj.fetchDouble(0) # value from odpi-c
+  # public api 
 
   objtype.releaseObjectType
+
+  var dropDemoColl : SqlQuery = osql" drop type HR.DEMO_COLL "
+  conn.executeDDL dropDemoColl
 
   var dropDemoObj : SqlQuery = osql" drop type HR.DEMO_OBJ "
   conn.executeDDL(dropDemoObj)
