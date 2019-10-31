@@ -31,12 +31,16 @@ template setBoolean*( param : ParamTypeRef, value : Option[bool]) =
   ## access template for single bind variables (index 0)
   param[0].setBoolean(value)      
 
-template setBoolean*( param : OracleObj , index : int,  value : Option[bool]) =
+template setBoolean*( param : OracleObj , 
+                      index : int,  
+                      value : Option[bool]) =
   ## access template for db-types
   param[index].setBoolean(value)
   setAttributeValue(param,index)
 
-template setBoolean*( param : OracleObj , attrName : string,  value : Option[bool]) =
+template setBoolean*( param : OracleObj , 
+                      attrName : string,  
+                      value : Option[bool]) =
   ## access template for db-types
   setBoolean(param,lookUpAttrIndexByName(param,attrName),value)
 
@@ -71,12 +75,16 @@ proc setFloat*( param : ptr dpiData, value : Option[float32]) =
 template setFloat*(param : ParamTypeRef, value : Option[float32]) =
   param[0].setFloat(value)
 
-template setFloat*( param : OracleObj , index : int,  value : Option[float32]) =
+template setFloat*( param : OracleObj , 
+                    index : int,  
+                    value : Option[float32]) =
   ## access template for db-types
   param[index].setFloat(value)
   setAttributeValue(param,index)
 
-template setFloat*( param : OracleObj , attrName : string,  value : Option[float32]) =
+template setFloat*( param : OracleObj , 
+                    attrName : string,  
+                    value : Option[float32]) =
   setFloat(param,lookUpAttrIndexByName(param,attrName),value)
 
 template fetchDouble*(val : ptr dpiData) : Option[float64] =
@@ -115,7 +123,9 @@ template setDouble*( param : OracleObj , index : int,  value : Option[float64]) 
   param[index].setDouble(value)
   setAttributeValue(param,index)
 
-template setDouble*( param : OracleObj , attrName : string,  value : Option[float64]) =
+template setDouble*( param : OracleObj , 
+                     attrName : string,  
+                     value : Option[float64]) =
   ## access template for db-types
   setDouble(param,lookUpAttrIndexByName(param,attrName),value)
 
@@ -148,12 +158,16 @@ template setUInt64*( param : ParamTypeRef, value : Option[uint64] ) =
   ## convenience template for accessing the first parameter within the buffer
   param[0].setUInt64(value)
 
-template setUInt64*( param : OracleObj , index : int,  value : Option[uint64]) =
+template setUInt64*( param : OracleObj , 
+                     index : int,  
+                     value : Option[uint64]) =
   ## access template for db-types
   param[index].setUInt64(value)
   setAttributeValue(param,index)
   
-template setUInt64*( param : OracleObj , attrName : string,  value : Option[uint64]) =
+template setUInt64*( param : OracleObj , 
+                     attrName : string,  
+                     value : Option[uint64]) =
   ## access template for db-types
   setUInt64(param,lookUpAttrIndexByName(param,attrName),value)
 
@@ -171,7 +185,8 @@ template fetchInt64*( param : OracleObj , index : int) : Option[int64] =
   ## access template for db-types
   getAttributeValue(param,index).fetchInt64
 
-template fetchInt64*( param : OracleObj , attrName : string) : Option[int64] =
+template fetchInt64*( param : OracleObj , 
+                      attrName : string) : Option[int64] =
   ## access template for db-types
   getAttributeValue(param,lookUpAttrIndexByName(attrName)).fetchInt64
 
@@ -187,12 +202,16 @@ template setInt64*( param : ParamTypeRef, value :  Option[int64] )  =
   ## convenience template for accessing the first parameter within the buffer
   param[0].setInt64(value)
 
-template setInt64*( param : OracleObj , index : int,  value : Option[int64]) =
+template setInt64*( param : OracleObj , 
+                   index : int,  
+                   value : Option[int64]) =
   ## access template for db-types
   param[index].setInt64(value)
   setAttributeValue(param,index)
 
-template setInt64*( param : OracleObj , attrName : string,  value : Option[int64]) =
+template setInt64*( param : OracleObj , 
+                    attrName : string,  
+                    value : Option[int64]) =
   ## access template for db-types
   setInt64(param,lookUpAttrIndexByName(param,attrName),value)
 
@@ -229,12 +248,16 @@ template setIntervalDS*(param : ptr dpiData , value : Option[Duration]) =
 template setIntervalDS*( param : ParamTypeRef, value : Option[Duration]) =
   param[0].setIntervalDS(value)
 
-template setIntervalDS*( param : OracleObj , index : int,  value : Option[Duration]) =
+template setIntervalDS*( param : OracleObj , 
+                         index : int,  
+                         value : Option[Duration]) =
   ## access template for db-types
   param[index].setIntervalDS(value)
   setAttributeValue(param,index)
 
-template setIntervalDS*( param : OracleObj , attrName : string,  value : Option[Duration]) =
+template setIntervalDS*( param : OracleObj , 
+                         attrName : string,  
+                         value : Option[Duration]) =
   ## access template for db-types
   setIntervalDS(param,lookUpAttrIndexByName(param,attrName),value)
 
@@ -282,12 +305,16 @@ proc setDateTime*(param : ptr dpiData , value : Option[DateTime] ) =
 template setDateTime*( param : ParamTypeRef, value : Option[DateTime] ) =
   param[0].setDateTime(value)
 
-template setDateTime*( param : OracleObj , index : int,  value : Option[DateTime]) =
+template setDateTime*( param : OracleObj , 
+                       index : int,  
+                       value : Option[DateTime]) =
   ## access template for db-types
   param[index].setDateTime(value)
   setAttributeValue(param,index)
 
-template setDateTime*( param : OracleObj , attrName : string,  value : Option[DateTime]) =
+template setDateTime*( param : OracleObj , 
+                       attrName : string,  
+                       value : Option[DateTime]) =
   setDateTime(param,lookUpAttrIndexByName(param,attrName),value)
 
 template fetchString*( val : ptr dpiData ) : Option[string] =
@@ -311,7 +338,8 @@ template fetchString*( param : OracleObj , index : int) : Option[string] =
   ## access template for db-types
   getAttributeValue(param,index).fetchString
 
-template fetchString*( param : OracleObj , attrName : string) : Option[string] =
+template fetchString*( param : OracleObj , 
+                       attrName : string) : Option[string] =
   ## access template for db-types
   getAttributeValue(param,lookUpAttrIndexByName(attrName)).fetchString
 
@@ -322,17 +350,25 @@ template setString*(val : ptr dpiData, value : Option[string]) =
     val.setDbNull
   else:
     val.setNotDbNull
-    value.get.copyString2DpiData(val)
+    # fixme: we need to change the interface here
+    # we need the metadata to determine the
+    # amount of mem we need.
+    var p = value.get
+    p.copyString2DpiData(val)
 
 template setString*(param : ParamTypeRef, value : Option[string]) =
   param[0].setString(value)
 
-template setString*( param : OracleObj , index : int,  value : Option[string]) =
+template setString*( param : OracleObj , 
+                     index : int,  
+                     value : Option[string]) =
   ## access template for db-types
   param[index].setString(value)
   setAttributeValue(param,index)
 
-template setString*( param : OracleObj , attrName : string,  value : Option[string]) =
+template setString*( param : OracleObj , 
+                     attrName : string,  
+                     value : Option[string]) =
   ## access template for db-types
   setString(param,lookUpAttrIndexByName(param,attrName),value)
 
@@ -360,18 +396,23 @@ template setBytes*( val : ptr dpiData, value : Option[seq[byte]] ) =
     val.setDbNull
   else:
     val.setNotDbNull
-    value.get.copySeq2Data(val)
+    var x = value.get
+    x.copySeq2Data(val)
 
 template setBytes*(param : ParamTypeRef, value : Option[seq[byte]]) =
   ## convenience template to access the parameters first row
   param[0].setBytes(value)
 
-template setBytes*( param : OracleObj , index : int,  value : Option[seq[byte]]) =
+template setBytes*( param : OracleObj , 
+                    index : int,  
+                    value : Option[seq[byte]]) =
   ## access template for db-types
   param[index].setBytes(value)
   setAttributeValue(param,index)
   
-template setBytes*( param : OracleObj , attrName : string,  value : Option[seq[byte]]) =
+template setBytes*(   param : OracleObj , 
+                   attrName : string,  
+                   value : Option[seq[byte]]) =
   ## access template for db-types
   setBytes(param,lookUpAttrIndexByName(param,attrName),value)
 
