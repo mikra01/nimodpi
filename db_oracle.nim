@@ -1188,6 +1188,29 @@ template `[]`(obj: OracleObj, colidx: int): ptr dpiData =
   obj.bufferedColumn[colidx]
 
 # type collection related stuff
+proc copyOracleObj( obj : OracleObj ) : OracleObj =
+  ## copies a object and returns a new independent new one
+  ## which must be released if no longer needed 
+  result.objType = obj.objType
+
+  if DpiResult(dpiObject_copy(obj.objHdl,result.objHdl.addr)).isFailure:
+    raise newException(IOError, "copyOracleObj: " &
+      getErrstr(obj.objType.relatedConn.context.oracleContext))
+    {.effects.}    
+
+  # setup buffered columns
+  # TODO: template this: setupObjColBuffer
+  result.bufferedColumn = newSeq[ptr dpiData](obj.objType.attributes.len)
+  # alloc one chunk to hold all dpiData structs
+  var buffbase = cast[int](alloc0(obj.objType.attributes.len * sizeof(dpiData)))
+  let dpiSize = sizeof(dpiData)
+
+  for i in result.bufferedColumn.low .. result.bufferedColumn.high:
+    result.bufferedColumn[i] = cast[ptr dpiData](buffbase)
+    buffbase = buffbase + dpiSize
+
+  return result
+
 
 # int dpiObject_copy(dpiObject *obj, dpiObject **copiedObj)
 # int dpiObject_deleteElementByIndex(dpiObject *obj, int32_t index)
@@ -1607,8 +1630,13 @@ when isMainModule:
   echo $obj.fetchDouble(0) # value from odpi-c
   # public api 
 
-  objtype.releaseObjectType
+  var copyOf = obj.copyOracleObj
 
+  echo $copyOf.fetchDouble(0) # value from odpi-c
+
+  copyOf.releaseOracleObject
+  obj.releaseOracleObject
+  objtype.releaseObjectType
 
   var dropDemoAggr :  SqlQuery = osql" drop function HR.DEMO_COLAGGR "
   conn.executeDDL dropDemoAggr
