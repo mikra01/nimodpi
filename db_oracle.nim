@@ -1183,7 +1183,34 @@ proc setAttributeValue( obj : OracleObj, idx: int ) =
     {.effects.}    
 
 template `[]`(obj: OracleObj, colidx: int): ptr dpiData =
+  ## internal template to obtain the dpiData pointer for each
+  ## attribute
   obj.bufferedColumn[colidx]
+
+# type collection related stuff
+
+# int dpiObject_copy(dpiObject *obj, dpiObject **copiedObj)
+# int dpiObject_deleteElementByIndex(dpiObject *obj, int32_t index)
+# int dpiObject_getElementExistsByIndex(dpiObject *obj, int32_t index, int *exists)
+
+# int dpiObject_getElementValueByIndex(dpiObject *obj, int32_t index, 
+# dpiNativeTypeNum nativeTypeNum, dpiData *value)
+# eval
+# int dpiObject_getFirstIndex(dpiObject *obj, int32_t *index, int *exists)
+# int dpiObject_getLastIndex(dpiObject *obj, int32_t *index, int *exists)
+# int dpiObject_getNextIndex(dpiObject *obj, int32_t index, int32_t *nextIndex, int *exists)
+# int dpiObject_getPrevIndex(dpiObject *obj, int32_t index, int32_t *prevIndex, int *exists)
+# int dpiObject_getSize(dpiObject *obj, int32_t *size)
+# int dpiObject_trim(dpiObject *obj, uint32_t numToTrim)
+
+# object setter/getter into index
+# int dpiObject_setElementValueByIndex(dpiObject *obj, int32_t index, dpiNativeTypeNum nativeTypeNum, dpiData *value
+# nt dpiObject_getElementValueByIndex(dpiObject *obj, int32_t index, dpiNativeTypeNum nativeTypeNum, dpiData *value)
+
+
+# append element to a collection
+
+# delete element of a collection (holes)
 
 
 # appendElement with type: object (only possible with collection objects?)
@@ -1369,7 +1396,8 @@ when isMainModule:
       StringValue                         varchar2(60),
       FixedCharValue                      char(10),
       DateValue                           date,
-      TimestampValue                      timestamp 
+      TimestampValue                      timestamp,
+      RawValue                            raw(25) 
     );
    """
   conn.executeDDL(demoCreateObj)
@@ -1538,6 +1566,34 @@ when isMainModule:
 
   conn.executeDDL(demoCreateColl)  
 
+  var demoAggr : SqlQuery = osql"""
+      create or replace FUNCTION  HR.DEMO_COLAGGR 
+       -- naive collection aggregation (no real world example)
+         (
+           PARAM1 IN HR.DEMO_COLL
+          ) RETURN VARCHAR2 AS
+             px1 varchar2(3000) := 'table_parameter_was_null';
+          BEGIN
+           if param1 is not null then
+             px1 := '';
+             if param1.count > 0 then
+              for i in param1.first .. param1.last 
+               loop
+                px1 := px1 || param1(i).StringValue;
+               end loop;
+            else
+             px1 := 'table_is_empty';
+            end if;
+           end if;
+           dbms_output.put_line(px1);
+        RETURN px1;
+      END DEMO_COLAGGR;
+  """
+ 
+  # create target function
+  conn.executeDDL(demoAggr)  
+
+
   # lookup type and print results
   let objtype = conn.lookupObjectType("HR.DEMO_OBJ")
   var obj  = objtype.newOracleObject
@@ -1552,6 +1608,10 @@ when isMainModule:
   # public api 
 
   objtype.releaseObjectType
+
+
+  var dropDemoAggr :  SqlQuery = osql" drop function HR.DEMO_COLAGGR "
+  conn.executeDDL dropDemoAggr
 
   var dropDemoColl : SqlQuery = osql" drop type HR.DEMO_COLL "
   conn.executeDDL dropDemoColl
