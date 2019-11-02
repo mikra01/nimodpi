@@ -424,10 +424,9 @@ template setBytes*( param : OracleObj ,
                                    st.len.uint32 ) 
   setAttributeValue(param,index)
 
-
-template setBytes*(   param : OracleObj , 
-                   attrName : string,  
-                   value : Option[seq[byte]]) =
+template setBytes*( param : OracleObj , 
+                    attrName : string,  
+                    value : Option[seq[byte]]) =
   ## access template for db-types
   setBytes(param,lookUpAttrIndexByName(param,attrName),value)
 
