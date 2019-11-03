@@ -614,7 +614,8 @@ proc addArrayBindParameter*(ps: var PreparedStatement,
                        isPlSqlArray : bool = false) : ParamTypeRef =
   ## constructs an array bindparameter by parameterName.
   ## array parameters are used for bulk-insert or plsql-array-handling
-  ## throws IOException in case of error.
+  ## throws IOException in case of error. isPlSqlArray is true only for
+  ## index by tables.
   ## see https://oracle.github.io/odpi/doc/user_guide/data_types.html
   ## for supported type combinations of ColumnType.
   ## the parametername must be referenced within the
@@ -641,7 +642,8 @@ proc addArrayBindParameter*(ps: var PreparedStatement,
            isPlSqlArray : bool = false): ParamTypeRef =
   ## constructs a array bindparameter by parameter index.
   ## array parameters are used for bulk-insert or plsql-array-handling.
-  ## throws IOException in case of error.
+  ## throws IOException in case of error.  isPlSqlArray is true only for
+  ## index by tables.
   ## see https://oracle.github.io/odpi/doc/user_guide/data_types.html
   ## for supported type combinations of ColumnType.
   ## the parameterindex must be referenced within the
@@ -665,9 +667,11 @@ proc addArrayBindParameter*(ps: var PreparedStatement,
 proc addObjectBindParameter*(ps: var PreparedStatement,
                              idx: BindIdx,
                              objType : OracleObjType,
-                             rowCount : int , isPlSqlArray : bool = false ): ParamTypeRef =
+                             rowCount : int , 
+                             isPlSqlArray : bool = false ): ParamTypeRef =
   ## constructs a object bindparameter by parameter index.
-  ## this bindparameter is an array parameter.
+  ## this bindparameter is an array parameter type.  isPlSqlArray is true only for
+  ## index by tables.
   ## array parameters are used for bulk-insert or plsql-array-handling.
   ## throws IOException in case of error.
   ## the parameterindex must be referenced within the
@@ -681,12 +685,45 @@ proc addObjectBindParameter*(ps: var PreparedStatement,
       " exceeds the preparedStatements maxBufferedRows" )
     {.effects.}
 
-  result = newParamTypeRef(ps, BindInfo(kind: BindInfoType.byPosition,
-            paramVal: idx),
-            (DpiNativeCType.OBJECT, DpiOracleType.OTOBJECT,0, 
-             false, 0.int8, "",0.int16,0.int16),isPlSqlArray,rowcount,objType.baseHdl)
+  result = newParamTypeRef(ps, 
+                    BindInfo(kind: BindInfoType.byPosition,
+                             paramVal: idx),
+             (DpiNativeCType.OBJECT, DpiOracleType.OTOBJECT,0, 
+               false, 0.int8, "",0.int16,0.int16),
+             isPlSqlArray,rowcount,objType.baseHdl)
   newVar(ps, result)
   ps.boundParams.add(result)
+
+proc addObjectBindParameter*(ps: var PreparedStatement,
+                             paramName: string,
+                             objType : OracleObjType,
+                             rowCount : int, 
+                             isPlSqlArray : bool = false) : ParamTypeRef =
+  ## constructs a object bindparameter by parameter index.
+  ## this bindparameter is an array parameter type.  isPlSqlArray is true only for
+  ## index by tables.
+  ## array parameters are used for bulk-insert or plsql-array-handling.
+  ## throws IOException in case of error.
+  ## the parameterindex must be referenced within the
+  ## query with :<paramIndex>.
+  ## the parameter value can be set with the typed setters on the ParamType.
+  ## the type of the parameter is implicit in,out or in/out.
+  ## this depends on the underlying query
+  if ps.bufferedRows < rowCount:
+    raise newException(IOError, "addObjectBindParameter: " &
+      "given rowCount of " & $rowCount & 
+      " exceeds the preparedStatements maxBufferedRows" )
+    {.effects.}
+
+  result = newParamTypeRef(ps, 
+                        BindInfo(kind: BindInfoType.byName,paramName: paramName),
+                        (DpiNativeCType.OBJECT, DpiOracleType.OTOBJECT,0, 
+                         false, 0.int8, "",0.int16,0.int16),
+                         isPlSqlArray,rowcount,objType.baseHdl)
+  newVar(ps, result)
+  ps.boundParams.add(result)
+
+
 
 proc destroy*(prepStmt: var PreparedStatement) =
   ## frees the preparedStatements internal resources.
