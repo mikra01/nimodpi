@@ -2035,8 +2035,16 @@ when isMainModule:
         echo r1
 
       # same example with invocation from sql 
-      # FIXME: not working because an resultset object fetcher implemented
-      # var demoCallAggr2 = osql""" select * from HR.DEMO_COLAGGR(:1) """
+      # FIXME: not working because we need to define a nested table
+      var nestedtabStmt = osql"""
+                                 create table HR.NDEMO (
+                                   ntestname varchar2(30),
+                                   testcol hr.demo_coll)
+                                nested table testcol store as democolltab
+                              """
+      conn.executeDDL(nestedtabStmt)
+
+      # var demoCallAggr2 = osql""" select * from HR.NDEMO """
       # var callFuncAggr2 : PreparedStatement
       # var callFuncResultAggr2 : ResultSet
       # newPreparedStatement(conn,demoCallAggr2,callFuncAggr2,5)
@@ -2050,6 +2058,10 @@ when isMainModule:
       #    echo $row[0].fetchString
       
       # todo: test bulk collect the collectionobjects into the hr.testtable
+      
+      # drop tab with nested table
+      var dropNDEMOTab = osql"drop table HR.NDEMO "
+      conn.executeDDL(dropNDEMOTab)
 
   copyof.releaseOracleObject
   obj.releaseOracleObject
