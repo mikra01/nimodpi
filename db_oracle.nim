@@ -101,11 +101,16 @@ type
     # populated for returning statements
     columnType*: ColumnType
     # tracks the native- and dbtype
+    objectTypeHandle : ptr dpiObjectType
+    # object type handle for plsql types
+    # FIXME: autoeval within resultSet/move2columnType
     paramVar: ptr dpiVar
     # ODPI-C ptr to the variable def
     buffer: ptr dpiData
-    # ODPI-C ptr to the data buffer
+    # ODPI-C ptr to the variables data buffer
+    # provided by ODPI-C
     rawHsMemory : ptr byte
+    # FIXME: check if needed
     # raw handshake memory. used for pointer types.
     # an entire block is allocated according to the maxlen
     # of the type and the rowbuffersize
@@ -128,6 +133,7 @@ type
                       name : string,
                       precision : int16,
                       fsPrecision : int16 ] # scale used for some numeric types
+  # FIXME: refactor to object
   ColumnTypeList* = seq[ColumnType]
   # predefined column types
 
@@ -199,14 +205,18 @@ type
     objectTypeInfo : dpiObjectTypeInfo
     isCollection : bool
     elementTypeInfo : dpiDataTypeInfo
+    # the type of the collections member
     attributes : seq[ptr dpiObjectAttr]
     # only populated if the type is not a collection
     columnTypeList : ColumnTypeList
     # columnTypeList and attributes are in the
     # same order (for non collection types)
+    tmpAttrData : ptr dpiData
+    # allocated area for fetching/setting attributes
+    # by dpiObject handle
 
   OracleObj* = object of RootObj
-    ## wrapper for an object instance
+    ## thin wrapper for an object instance
     ## related to a specific type handle
     objType : OracleObjType
     objHdl : ptr dpiObject
@@ -217,9 +227,13 @@ type
     bufferedColumn : seq[ptr dpiData]
     # the attributes of the object. only
     # initialized if object owns attributes
-  
+    # FIXME: evaluate if needed
+   
   OracleCollection* = object of OracleObj
-    collectionMembers : seq[OracleObj]
+    ## thin wrapper for a collection type element
+    elementHelper : ptr dpiData
+    # helper to add/fetch elements by attribute.
+    # the type of the element is of objType.elementTypeInfo
   
   Lob* = object
     ## TODO: implement
@@ -324,9 +338,6 @@ template setDbNull*(val: ptr dpiData) =
 template setNotDbNull*(val: ptr dpiData) =
   ## sets value present
   val.isNull = 0.cint
-
-include setfetchtypes
-  # includes all fetch/set templates
 
 template getColumnCount*(rs: var ResultSet): int =
   ## returns the number of columns for the ResultSet
@@ -525,6 +536,7 @@ template newVar(ps: var PreparedStatement, param: ParamTypeRef) =
   var isArray: uint32 = 0
   if param.isPlSqlArray:
     isArray = 1
+    # quirky
 
   if DpiResult(dpiConn_newVar(
          ps.relatedConn.connection,
@@ -534,7 +546,7 @@ template newVar(ps: var PreparedStatement, param: ParamTypeRef) =
     param.columnType.colsize.uint32, #size
     param.columnType.sizeIsBytes.cint,
     isArray.cint,
-    nil,
+    param.objectTypeHandle,
     param.paramVar.addr,
     param.buffer.addr
   )).isFailure:
@@ -548,14 +560,16 @@ proc newParamTypeRef(ps: var PreparedStatement,
                       bindInfo: BindInfo,
                       coltype: ColumnType,
                       isPlSqlArray: bool,
-                      boundRows: int): ParamTypeRef =
+                      boundRows: int, 
+                      objHdl : ptr dpiObjectType = nil): ParamTypeRef =
   result = ParamTypeRef(bindPosition: bindInfo,
                          columnType: coltype,
                          paramVar: nil,
                          buffer: nil,
                          rowBufferSize: boundRows,
                          isPlSqlArray: isPlSqlArray,
-                         isFetched: false)
+                         isFetched: false,
+                         objectTypeHandle : objHdl)
 
 proc addBindParameter*(ps: var PreparedStatement,
                          coltype: ColumnType,
@@ -646,7 +660,34 @@ proc addArrayBindParameter*(ps: var PreparedStatement,
                    coltype,isPlSqlArray,rowcount)
   newVar(ps, result)
   ps.boundParams.add(result)
-                 
+
+
+proc addObjectBindParameter*(ps: var PreparedStatement,
+                             idx: BindIdx,
+                             objType : OracleObjType,
+                             rowCount : int , isPlSqlArray : bool = false ): ParamTypeRef =
+  ## constructs a object bindparameter by parameter index.
+  ## this bindparameter is an array parameter.
+  ## array parameters are used for bulk-insert or plsql-array-handling.
+  ## throws IOException in case of error.
+  ## the parameterindex must be referenced within the
+  ## query with :<paramIndex>.
+  ## the parameter value can be set with the typed setters on the ParamType.
+  ## the type of the parameter is implicit in,out or in/out.
+  ## this depends on the underlying query
+  if ps.bufferedRows < rowCount:
+    raise newException(IOError, "addObjectBindParameter: " &
+      "given rowCount of " & $rowCount & 
+      " exceeds the preparedStatements maxBufferedRows" )
+    {.effects.}
+
+  result = newParamTypeRef(ps, BindInfo(kind: BindInfoType.byPosition,
+            paramVal: idx),
+            (DpiNativeCType.OBJECT, DpiOracleType.OTOBJECT,0, 
+             false, 0.int8, "",0.int16,0.int16),isPlSqlArray,rowcount,objType.baseHdl)
+  newVar(ps, result)
+  ps.boundParams.add(result)
+
 proc destroy*(prepStmt: var PreparedStatement) =
   ## frees the preparedStatements internal resources.
   ## this should be called if
@@ -775,7 +816,7 @@ template openRefCursor(ps : PreparedStatement,
   if param.columnType.nativeType == DpiNativeCType.STMT and
     param.columnType.dbType == DpiOracleType.OTSTMT:
     param.isFetched = true
-    outRefCursor.pstmt = param[0].fetchRefCursor
+    outRefCursor.pstmt = param[0].value.asStmt
     outRefCursor.relatedConn = ps.relatedConn
     outRefCursor.bufferedRows = bufferedRows
   
@@ -1066,6 +1107,10 @@ proc lookupObjectType*(conn : var OracleConnection,
     result.isCollection = false
   
   result.columnTypeList = newSeq[ColumnType](objinfo.numAttributes)
+
+  result.tmpAttrData = cast[ptr dpiData](alloc0(sizeof(dpiData)))
+  # alloc mem for raw fetching attribute values
+
   # setup attribute list
 
   # todo: check if attributes present
@@ -1100,9 +1145,10 @@ proc lookupObjectType*(conn : var OracleConnection,
   return result                              
  
 proc releaseObjectType*( objType : OracleObjType ) = 
-  ## releases the object type obtained by lookupObjectType
+  ## releases the object type obtained by lookupObjectType.
+  ## the internal memory is released first.
+  dealloc(objType.tmpAttrData)
 
-  # release attributes
   for i in objType.attributes.low .. objType.attributes.high:
     if DpiResult(dpiObjectAttr_release(objType.attributes[i])).isFailure:
       raise newException(IOError, "releaseObjectType: " &
@@ -1154,7 +1200,9 @@ proc newOracleObject*( objType : OracleObjType ) : OracleObj =
   ## at the moment subobjects are not implemented (getter/setter adjustment needed).
   ## ODPI-C and internal resources are hold till releaseOracleObject is called.
   ## variable length references must stay valid till the object sent to the database.
-  ## for collection types use: newOracleCollection
+  ## for collection types use: newOracleCollection.
+  ## if the native type is not of DpiNativeCType.OBJECT or an ODPI-C error happens 
+  ## an exception is thrown.
   if objType.isCollection:
     raise newException(IOError, "newOracleObject: " &
        "objectType is a collection and was: " & $objType )
@@ -1169,20 +1217,28 @@ proc newOracleObject*( objType : OracleObjType ) : OracleObj =
   result.setupObjBufferedColumn
 
 proc newOracleCollection*(objType : OracleObjType ) : OracleCollection =
+  ## create a new oracle collection object out of the OracleObjType which can be used
+  ## for binding(todo:eval) or reading/fetching from the database.
+  ## ODPI-C and internal resources are hold till releaseOracleCollection is called
+  ## (see withCollection helper template).
+  ## variable length references must stay valid till the object sent to the database.
+  ## for collection types use: newOracleCollection
   if not objType.isCollection:
     raise newException(IOError, "newOracleCollection: " &
        "objectType is not a collection and was: " & $objType )
-    {.effects.}
+    {.effects.}   
   if DpiResult(dpiObjectType_createObject(objType.baseHdl,result.objHdl.addr)).isFailure:
     raise newException(IOError, "newOracleObject: " &
         getErrstr(objType.relatedConn.context.oracleContext))
     {.effects.}
   result.objType = objType
-  result.collectionMembers = newSeq[OracleObj](10)
   result.setupObjBufferedColumn
+  result.elementHelper = cast[ptr dpiData](alloc0( sizeof(dpiData) ))
+  # needed for reading/writing collection members
+
 
 proc releaseOracleObject*( obj : OracleObj ) = 
-  ## releases the objects internal references and deallocs buffermem
+  ## releases the objects internal references and deallocs buffermem.
   dealloc(obj.dataHelper)
   # fetch chunkbase
   
@@ -1192,13 +1248,11 @@ proc releaseOracleObject*( obj : OracleObj ) =
     {.effects.}
 
 proc releaseOracleCollection*(obj : OracleCollection ) =
-  ## releases the objects internal references and deallocs buffermem
+  ## releases the objects internal references and deallocs buffermem.
+  ## bound objects created by the frontend must be released separately
+  ## before calling this proc
+  dealloc(obj.elementHelper)
   dealloc(obj.dataHelper)
-  if obj.collectionMembers.len > 0:
-    for i in obj.collectionMembers.low .. obj.collectionMembers.high:
-      if not obj.collectionMembers[i].objHdl.isNil:
-        obj.collectionMembers[i].releaseOracleObject
-        # nested collection members not implemented
  
 template lookUpAttrIndexByName( obj : OracleObj, attrName : string ) : int =
   ## used by the attributeValue getter/setter to obtain the index by name
@@ -1233,6 +1287,40 @@ proc getAttributeValue( obj : var OracleObj, idx : int ) : ptr dpiData =
   
   return obj.bufferedColumn[idx]
 
+proc getObjectAttributeValue( handle : ptr dpiObject, 
+                              idx : int, 
+                              objtype : OracleObjType) : ptr dpiData  =
+  ## retrieves the object attribute by type and raw dpiObject handle.
+  ## the object handle can be retrieved out of a dpiData handle
+  ## with help of the template getObjectHandle                         
+  if DpiResult(dpiObject_getAttributeValue(
+                handle,
+                objtype.attributes[idx],
+                objtype.columnTypeList[idx].nativeType.dpiNativeTypeNum,
+                objtype.tmpAttrData)
+               ).isFailure:
+    raise newException(IOError, "getObjectAttribute: " &
+      getErrstr(objType.relatedConn.context.oracleContext))
+    {.effects.}
+  result = objtype.tmpAttrData  
+
+proc setObjectAttributeValue( handle : ptr dpiObject,
+                              idx : int, 
+                              objtype : OracleObjType) =
+  ## sets the object attribute by type and raw dpiObject handle.
+  ## the object handle can be retrieved out of a dpiData handle
+  ## with help of the template getObjectHandle.
+  ## before calling populate the internal struct objtype.tmpAttrData  
+  ## first.                        
+  if DpiResult(dpiObject_setAttributeValue(handle,
+               objtype.attributes[idx],
+               objtype.columnTypeList[idx].nativeType.dpiNativeTypeNum,
+               objtype.tmpAttrData)).isFailure:
+    raise newException(IOError, "getObjectAttribute: " &
+      getErrstr(objType.relatedConn.context.oracleContext))
+    {.effects.}
+
+
 proc setAttributeValue( obj : OracleObj, idx: int ) = 
   ## internal setter for propagating the value of 
   ## a type(dbObject) into odpi-c domain
@@ -1249,16 +1337,18 @@ proc setAttributeValue( obj : OracleObj, idx: int ) =
       getErrstr(obj.objType.relatedConn.context.oracleContext))
     {.effects.}    
 
+
 template `[]`(obj: OracleObj, colidx: int): ptr dpiData =
   ## internal template to obtain the dpiData pointer for each
   ## attribute
   obj.bufferedColumn[colidx]
-
+  # FIXME: eval if buffering needed
+  
 proc copyOracleObj*( obj : OracleObj ) : OracleObj =
   ## copies an object and returns a new independent new one
   ## which must be released if no longer needed 
   result.objType = obj.objType
-
+ 
   if DpiResult(dpiObject_copy(obj.objHdl,result.objHdl.addr)).isFailure:
     raise newException(IOError, "copyOracleObj: " &
       getErrstr(obj.objType.relatedConn.context.oracleContext))
@@ -1266,16 +1356,19 @@ proc copyOracleObj*( obj : OracleObj ) : OracleObj =
  
   result.setupObjBufferedColumn
  
- 
-template checkCollectionEx*(obj : OracleObj, ctx : string = "" ) =
-  ## checks if the element is a collection. if not an IOException
-  ## is thrown. the context is optional but should be a proc name
-  ## or something else to determine the calling context
-  if not obj.objType.isCollection:
-    raise newException(IOError, ctx &
-      " object of type: " & $obj.objType & " is not a collection!" )
-    {.effects.}
-  
+proc copyOracleColl*( obj : OracleCollection ) : OracleCollection =
+    ## copies an object and returns a new independent new one
+    ## which must be released if no longer needed 
+    result.objType = obj.objType
+
+    if DpiResult(dpiObject_copy(obj.objHdl,result.objHdl.addr)).isFailure:
+      raise newException(IOError, "copyOracleColl: " &
+        getErrstr(obj.objType.relatedConn.context.oracleContext))
+      {.effects.}
+   
+    result.setupObjBufferedColumn
+    result.elementHelper = cast[ptr dpiData](alloc0( sizeof(dpiData) ))
+
 template withOracleObject*( obj : OracleObj, body: untyped) =
   ## releases the objects resources after leaving
   ## the block. exceptions are not catched.
@@ -1293,10 +1386,9 @@ template withOracleCollection*( obj : OracleCollection, body: untyped) =
     obj.releaseOracleCollection
   
 
-proc fetchCollectionSize*( collObj : OracleObj ) : int =
+proc fetchCollectionSize*( collObj : OracleCollection ) : int =
   ## fetches the size of a collection object. if the object
   ## is not a collection an IOException is thrown
-  collObj.checkCollectionEx("fetchCollectionSize: ")
   var csize : int32 
   if DpiResult(dpiObject_getSize(collObj.objHdl,csize.addr)).isFailure:
     raise newException(IOError, "fetchCollectionSize: " &
@@ -1305,20 +1397,19 @@ proc fetchCollectionSize*( collObj : OracleObj ) : int =
 
   result = csize.int 
 
-proc deleteElementByIndex*( collObj: OracleObj, index : int ) = 
+proc deleteElementByIndex*( collObj: OracleCollection, index : int ) = 
   ## delete an element from the collection. the element itself
-  ## must be freed manually.
-  collObj.checkCollectionEx("deleteElementByIndex: ")
+  ## is returned and must be freed manually if needed
   if DpiResult(dpiObject_deleteElementByIndex(collObj.objHdl,index.int32)).isFailure:
     raise newException(IOError, "deleteElementByIndex: " &
         getErrstr(collObj.objType.relatedConn.context.oracleContext))
     {.effects.}    
-  
-proc isElementPresent*( collObj : OracleObj, index : int) : bool =
+
+
+proc isElementPresent*( collObj : OracleCollection, index : int) : bool =
   ## probes if the element is present at the specified index.
   ## returns true if so; otherwise false.
   ## an IOException is thrown if the given object is not a collection
-  collObj.checkCollectionEx("isElementPresent: ")
   var exists : cint = 0
   if DpiResult(dpiObject_getElementExistsByIndex(collObj.objHdl,
                                                 index.int32,
@@ -1329,10 +1420,9 @@ proc isElementPresent*( collObj : OracleObj, index : int) : bool =
   if exists == 1 : true else: false
 
 
-proc getFirstIndex*( collObj : OracleObj ) : tuple[index: int, isPresent : bool] =
+proc getFirstIndex*( collObj : OracleCollection ) : tuple[index: int, isPresent : bool] =
   ## returns the first used index of a collection. isPresent indicates if 
   ## there was an index position found.
-  collObj.checkCollectionEx("getFirstIndex: ")
   var idx : int32 = 0
   var present : cint = 0
   if DpiResult(dpiObject_getFirstIndex(collObj.objHdl,
@@ -1344,11 +1434,10 @@ proc getFirstIndex*( collObj : OracleObj ) : tuple[index: int, isPresent : bool]
   if present == 1 : result.isPresent = true else: result.isPresent = false
   result.index = idx.int
   
-proc getLastIndex*( collObj : OracleObj ) : tuple[index: int, isPresent : bool] =
+proc getLastIndex*( collObj : OracleCollection ) : tuple[index: int, isPresent : bool] =
   ## returns the last used index of a collection. isPresent indicates if 
   ## there was an index position found. an IOException is thrown if the
   ## object is not a collection.
-  collObj.checkCollectionEx("getLastIndex: ")
   var idx : int32 = 0
   var present : cint = 0
   if DpiResult(dpiObject_getLastIndex(collObj.objHdl,
@@ -1360,12 +1449,12 @@ proc getLastIndex*( collObj : OracleObj ) : tuple[index: int, isPresent : bool] 
   if present == 1 : result.isPresent = true else: result.isPresent = false
   result.index = idx.int
 
-proc getNextIndex*( collObj : OracleObj, index : int ) : tuple[index: int, isPresent : bool] =
+proc getNextIndex*( collObj : OracleCollection, 
+                    index : int ) : tuple[index: int, isPresent : bool] =
     ## returns the next used index from the given index position of a collection. 
     ## isPresent indicates if there was an index position found. 
     ## an IOException is thrown if the
     ## object is not a collection.
-    collObj.checkCollectionEx("getNextIndex: ")
     var idx : int32 = 0
     var present : cint = 0
     if DpiResult(dpiObject_getNextIndex(collObj.objHdl,index.int32,
@@ -1378,12 +1467,12 @@ proc getNextIndex*( collObj : OracleObj, index : int ) : tuple[index: int, isPre
     result.index = idx.int
   
 
-proc getPreviousIndex*( collObj : OracleObj, index : int ) : tuple[index: int, isPresent : bool] =
+proc getPreviousIndex*( collObj : OracleCollection, 
+                        index : int ) : tuple[index: int, isPresent : bool] =
   ## returns the previous used index from the given index position of a collection. 
   ## isPresent indicates if there was an index position found. 
   ## an IOException is thrown if the
   ## object is not a collection.
-  collObj.checkCollectionEx("getPreviousIndex: ")
   var idx : int32 = 0
   var present : cint = 0
   if DpiResult(dpiObject_getPrevIndex(collObj.objHdl,index.int32,
@@ -1395,13 +1484,15 @@ proc getPreviousIndex*( collObj : OracleObj, index : int ) : tuple[index: int, i
   if present == 1 : result.isPresent = true else: result.isPresent = false
   result.index = idx.int
     
-proc appendElement*( collObj : OracleObj, obj2append : OracleObj) = 
-  ## appends the object (param: obj) to ( param : collObj). 
+proc appendElement*( collObj : OracleCollection, 
+                     obj2append : var OracleObj) = 
+  ## appends the object (param: obj) to ( param : collObj) at the
+  ## end of the collection. 
   ## throws an IOError if the collectionObject
-  ## is not a collection or an internal error occurs.
-  ## it's unclear if the obj needs to be stay alive till the data
-  ## is send to the database (propably yes) 
-  collObj.checkCollectionEx("appendElement: ")
+  ## is not a collection or if the object to append is 
+  ## already related to a collection
+  ## or an internal error occurs.
+  ## nested tables should work but untested
   obj2append.dataHelper.setNotDbNull
   dpiData_setObject(obj2append.dataHelper,obj2append.objHdl)
 
@@ -1411,47 +1502,104 @@ proc appendElement*( collObj : OracleObj, obj2append : OracleObj) =
     raise newException(IOError, "appendElement: " &
       getErrstr(obj2append.objType.relatedConn.context.oracleContext))
     {.effects.}       
-
-
-proc trimCollection*( collObj : OracleObj, resizeVal : int ) =
+ 
+ 
+proc trimCollection*( collObj : OracleCollection, resizeVal : int ) =
   ## Trims the given numer of elements from the end of the collection.
-  ## an IOException is thrown if the object is not a collection
-  collObj.checkCollectionEx("trimCollection: ")
+  ## an IOException is thrown if the object is not a collection.
+  ## the elements itself must be freed manually.
   if DpiResult(dpiObject_trim(collObj.objHdl,resizeVal.uint32)).isFailure:
     raise newException(IOError, "trimCollection: " &
       getErrstr(collObj.objType.relatedConn.context.oracleContext))
     {.effects.}    
 
+proc setElementValue2Backend(collObj : OracleCollection, 
+                            index : int ) =
+  ## internal collection object setter with index. the collObj.elementHelper
+  ## dpiData structure must already populated before calling this proc.
+  ## this proc is generic and collection dependent if the object-type
+  ## is another object or native type.
+  ##  
+  ## an IOException is thrown if the object is not a collection
+  ## or an internal error occurs
+  if DpiResult(dpiObject_setElementValueByIndex(collObj.objHdl,
+                                           index.int32,
+                              collObj.objType.elementTypeInfo.defaultNativeTypeNum,
+                              collObj.elementHelper)).isFailure:
+    raise newException(IOError, "setElementValueByIndex: " &
+      getErrstr(collObj.objType.relatedConn.context.oracleContext))
+    {.effects.}    
 
-proc setElementValueByIndex(collObj : OracleObj, 
+proc getElementValueFromBackend(collObj : OracleCollection,
+                             index : int) : ptr dpiData =
+  ## internal collection object getter with index. returns the
+  ## populated dpiData structure. due to the ptr handling an explicit
+  ## setter is not provided. can be used both for DpiNativeCType.OBJECT
+  ## or native types.
+  ## an IOException is thrown if the object is not a collection
+  ## or an internal error occurs
+  if DpiResult(dpiObject_getElementValueByIndex(collObj.objHdl,
+                                               index.int32,
+                           collObj.objType.elementTypeInfo.defaultNativeTypeNum,
+                           collObj.elementHelper)).isFailure:
+    raise newException(IOError, "getElementValueByIndex: " &
+      getErrstr(collObj.objType.relatedConn.context.oracleContext))
+    {.effects.}    
+  return collObj.elementHelper
+
+proc setCollectionElement(collObj : OracleCollection, 
                             index : int, 
-                            valueIn : ptr dpiData ) =
-  ## internal collection object setter with index. valueIn is a pointer
-  ## to a given odpiData ODPI-C structure.
-  ## an IOException is thrown if the object is not a collection
-  ## or an internal error occurs
-  # int dpiObject_setElementValueByIndex(dpiObject *obj, 
-  # int32_t index, dpiNativeTypeNum nativeTypeNum, dpiData *value)
-  collObj.checkCollectionEx("setElementValueByIndex: ")
-  let nativeType = collObj.objType.elementTypeInfo.defaultNativeTypeNum
+                            value : OracleObj) =
+  ## sets a collection element at the specified index location.
+  ## before calling the internal helper structure must be populated.
+  ## the first index location is 0 
+  dpiData_setObject(collObj.elementHelper,value.objHdl)
+  collObj.setElementValue2Backend(index)
+  
+proc getCollectionElement(collObj : OracleCollection, index : int) : ptr dpiObject =
+  ## fetches object buffer at the specified index.
+  ## if the related element type is not of type DpiNativeCType.OBJECT an IOException
+  ## is thrown. the collection index starts with 0.
+  ## if the index is empty the internal helper buffer is returned.
+  ## for native typed collection elements please use the
+  ## fetch/set templates.
+  if not collObj.objType.
+            elementTypeInfo.defaultNativeTypeNum == 
+              DpiNativeCType.OBJECT.ord:
+    raise newException(IOError, "getCollectionElement: " &
+      "related native type must be OBJECT but was: " & 
+       $collObj.objType.elementTypeInfo )
+    {.effects.}
 
-proc getElementValueByIndex(collObj : OracleObj,
-                             index : int,
-                             valueOut : ptr dpiData ) =
-  ## internal collection object getter with index. valueOut is a pointer
-  ## to a given dpiData ODPI-C structure.
-  ## an IOException is thrown if the object is not a collection
-  ## or an internal error occurs
-  # int dpiObject_getElementValueByIndex(dpiObject *obj, 
-  # int32_t index, dpiNativeTypeNum nativeTypeNum, dpiData *value)
-  collObj.checkCollectionEx("getElementValueByIndex: ")
-  let nativeType = collObj.objType.elementTypeInfo.defaultNativeTypeNum
+  if collObj.isElementPresent(index):
+    result = cast[ptr dpiObject](collObj.getElementValueFromBackend(index).
+                                  value.asObject)
+  else:
+    collObj.elementHelper.setDbNull
+    result = cast[ptr dpiObject](collObj.elementHelper)
+
+template `[]`*(obj: OracleCollection, colidx: int) : ptr dpiObject  =
+  ## getter template to obtain the dpiData pointer for each
+  ## collection element . also used for setting the values
+  cast[ptr dpiObject](getCollectionElement(obj,colidx))
+
+template `[]`*(rawObject : ptr dpiObject, 
+               memberType: OracleObjType,
+               attributeIndex: int) : ptr dpiData  =
+  ## getter template to obtain the dpiData pointer for each
+  ## collection element . 
+  rawObject.getObjectAttributeValue(attributeIndex,memberType)
 
 
-proc bindOracleObject(pstmt : var PreparedStatement , obj : var OracleObj ) =
-  ## FIXME: implement 
-  ## use int dpiVar_setFromObject(dpiVar *var, uint32_t pos, dpiObject *obj
-  discard
+proc setObject*(param : ParamTypeRef, rownum : int, value : OracleObj ) =
+  ## experimental: sets a bind parameter with value type: object  
+  if DpiResult(dpiVar_setFromObject(param.paramVar,
+                                    rownum.uint32,
+                                    value.objHdl)).isFailure:
+    raise newException(IOError, "setObject: " &
+        getErrstr(value.objType.relatedConn.context.oracleContext))
+    {.effects.}   
+    
 
 proc newTempLob*( conn : var OracleConnection, 
                   lobtype : DpiLobType, 
@@ -1463,6 +1611,9 @@ proc newTempLob*( conn : var OracleConnection,
     raise newException(IOError, "createConnection: " &
       getErrstr(conn.context.oracleContext))
     {.effects.}
+
+include setfetchtypes
+  # includes all fetch/set templates
 
 when isMainModule:
   ## the HR Schema is used (XE) for the following tests
@@ -1663,7 +1814,7 @@ when isMainModule:
   discard pstmt3.addArrayBindParameter(newRawColTypeParam(5),
              3.BindIdx,10)
   discard pstmt3.addArrayBindParameter(FloatColumnTypeParam,
-             4.BindIdx,10)                  
+             4.BindIdx,10)
   discard pstmt3.addArrayBindParameter(DoubleColumnTypeParam,
               5.BindIdx,10)                  
   discard pstmt3.addArrayBindParameter(ZonedTimestampTypeParam,
@@ -1837,19 +1988,71 @@ when isMainModule:
   # public api 
 
   var copyOf = obj.copyOracleObj
+  copyOf.setDouble(0,some(200.float64))
 
   echo $copyOf.fetchDouble(0) # value from odpi-c
 
   let colltype = conn.lookupObjectType("HR.DEMO_COLL")
   var collection = colltype.newOracleCollection
-
-  collection.appendElement(copyof)
-  collection.appendElement(obj)
-
-  echo " size of collection: " & $collection.fetchCollectionSize
-
-  collection.releaseOracleCollection
   
+  withOracleCollection(collection):
+    collection.appendElement(copyof)
+    collection.appendElement(obj)
+
+    echo " size of collection: " & $collection.fetchCollectionSize
+
+    var copyOfColl = collection.copyOracleColl
+    
+    withOracleCollection(copyOfColl):
+      echo " size of copied collection: " &  
+        $copyOfColl.fetchCollectionSize
+      echo $copyOfColl[1][objtype,0].fetchDouble
+      # fetches the member objects attribute at index 0 of the collections
+      # member object at index 1
+      copyOfColl[0][objtype,0] = some(22.float64)
+      copyOfColl[1][objtype,0] = some(10.float64)
+      echo $copyOfColl[1][objtype,0].fetchDouble
+      echo $copyOfColl[0][objtype,0].fetchDouble
+
+      # initialize string fields and call the aggregate udf
+      copyOfColl[0][objtype,1] = some("hello nim! ")
+      copyOfColl[1][objtype,1] = some("from oracle ")
+
+      # TODO: call the procedure with select statement
+      # in another example
+      var demoCallAggr = osql"""begin :1 := HR.DEMO_COLAGGR(:2); end; """
+      var callFuncAggr : PreparedStatement
+      var callFuncResultAggr : ResultSet
+      newPreparedStatement(conn,demoCallAggr,callFuncAggr,5)
+      
+      withPreparedStatement(callFuncAggr):
+        # call the function with direct parameter access 
+        let param1 = callFuncAggr.addBindParameter(newStringColTypeParam(500),BindIdx(1))
+        let param2 = callFuncAggr.addObjectBindParameter(BindIdx(2),colltype,5)
+        param2.setObject(0,copyOfColl) # todo: consolidate API
+        callFuncAggr.executeStatement(callFuncResult) 
+        var r1 = param1.fetchString()
+        echo r1
+
+      # same example with invocation from sql 
+      # FIXME: not working because an resultset object fetcher implemented
+      # var demoCallAggr2 = osql""" select * from HR.DEMO_COLAGGR(:1) """
+      # var callFuncAggr2 : PreparedStatement
+      # var callFuncResultAggr2 : ResultSet
+      # newPreparedStatement(conn,demoCallAggr2,callFuncAggr2,5)
+        
+      # withPreparedStatement(callFuncAggr2):
+      #  let param1 = callFuncAggr2.addObjectBindParameter(BindIdx(1),colltype,5)
+      #  param1.setObject(0,copyOfColl) # todo: consolidate API
+      #  callFuncAggr2.executeStatement(callFuncResultAggr2) 
+
+      #  for row in resultSetRowIterator(callFuncResultAggr2):       
+      #    echo $row[0].fetchString
+      
+      # todo: test bulk collect the collectionobjects into the hr.testtable
+
+  copyof.releaseOracleObject
+  obj.releaseOracleObject
   objtype.releaseObjectType
 
   var dropDemoAggr :  SqlQuery = osql" drop function HR.DEMO_COLAGGR "

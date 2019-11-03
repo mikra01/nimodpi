@@ -12,7 +12,7 @@ template fetchBoolean*(param : ParamTypeRef) : Option[bool] =
   param[0].fetchBoolean
 
 template fetchBoolean*( param : OracleObj , index : int) : Option[bool] =
-  ## access template for db-types
+  ## access template for db-types 
   getAttributeValue(param,index).fetchBoolean
 
 template fetchBoolean*( param : OracleObj , attrName : string) : Option[bool] =
@@ -128,6 +128,22 @@ template setDouble*( param : OracleObj ,
                      value : Option[float64]) =
   ## access template for db-types
   setDouble(param,lookUpAttrIndexByName(param,attrName),value)
+
+proc `[]=`*(rawObject : ptr dpiObject, 
+            memberType: OracleObjType,
+            attributeIndex: int,   
+            value: Option[float64] )  =
+  ## getter setter proc populate the dpiData pointer for the
+  ## specified member type
+  ## FIXME: provide setter and getter for all native types
+  if value.isNone:
+    memberType.tmpAttrData.setDbNull
+  else:  
+    memberType.tmpAttrData.setNotDbNull
+    memberType.tmpAttrData.value.asDouble = value.get
+  
+  rawObject.setObjectAttributeValue(attributeIndex,memberType)
+
 
 template fetchUInt64*(val : ptr dpiData) : Option[uint64] =
     ## fetches the specified value as double (Nims 64 bit type). the value is copied 
@@ -350,9 +366,6 @@ template setString*(val : ptr dpiData, value : Option[string]) =
     val.setDbNull
   else:
     val.setNotDbNull
-    # fixme: we need to change the interface here
-    # we need the metadata to determine the
-    # amount of mem we need.
     var p = value.get
     p.copyString2DpiData(val)
 
@@ -372,6 +385,24 @@ template setString*( param : OracleObj ,
                                    addr(st[0]), 
                                    st.len.uint32 ) 
   setAttributeValue(param,index)
+
+proc `[]=`*(rawObject : ptr dpiObject, 
+            memberType: OracleObjType,
+            attributeIndex: int,   
+            value: Option[string] )  =
+  ## getter setter proc populate the dpiData pointer for the
+  ## specified member type
+  ## FIXME: provide setter and getter for all native types
+  if value.isNone:
+    memberType.tmpAttrData.setDbNull
+  else:  
+    memberType.tmpAttrData.setNotDbNull
+    var p = value.get
+    memberType.tmpAttrData.value.asBytes.ptr = p[0].addr
+    memberType.tmpAttrData.value.asBytes.length = p.len.uint32
+
+  rawObject.setObjectAttributeValue(attributeIndex,memberType)
+
 
 template setString*( param : OracleObj , 
                      attrName : string,  
@@ -435,24 +466,17 @@ template fetchRowId*( param : ptr dpiData ) : ptr dpiRowid =
     param.value.asRowId 
   
 template setRowId*(param : ParamTypeRef , rowid : ptr dpiRowid ) =
-    ## bind parameter setter boolean type. this setter operates always with index 0
-    ## (todo: eval if the rowid could be nil, and add arraybinding-feature)
-    if value.isNone:
-      param.data.setDbNull
-    else:  
-      param.buffer.setNotDbNull
-      discard dpiVar_setFromRowid(param.paramVar,0,rowid)
+  ## bind parameter setter boolean type. this setter operates always with index 0
+  ## (todo: eval if the rowid could be nil, and add arraybinding-feature)
+  param.buffer.setNotDbNull
+  discard dpiVar_setFromRowid(param.paramVar,0,rowid)
 
 template setRowId*(param : ParamTypeRef , rowid : ptr dpiRowid , rownum : int = 0 ) =
   ## bind parameter setter boolean type. this setter operates always with index 0
   ## (todo: eval if the rowid could be nil, and add arraybinding-feature)
-  if value.isNone:
-    param.data.setDbNull
-  else:  
-    param.buffer.setNotDbNull
-    discard dpiVar_setFromRowid(param.paramVar,rownum.uint32,rowid)
+  param.buffer.setNotDbNull
+  discard dpiVar_setFromRowid(param.paramVar,rownum.uint32,rowid)
     
-
 template fetchRefCursor*(param : ptr dpiData ) : ptr dpiStmt =
     ## fetches a refCursorType out of the result column. 
     param.value.asStmt
