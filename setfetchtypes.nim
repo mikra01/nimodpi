@@ -333,6 +333,24 @@ template setDateTime*( param : OracleObj ,
                        value : Option[DateTime]) =
   setDateTime(param,lookUpAttrIndexByName(param,attrName),value)
 
+proc `[]=`*(rawObject : ptr dpiObject, 
+            memberType: OracleObjType,
+            attributeIndex: int,   
+            value: Option[DateTime] )  =
+  ## getter setter proc populate the dpiData pointer for the
+  ## specified member type
+  ## FIXME: provide setter and getter for all native types
+  if value.isNone:
+    memberType.tmpAttrData.setDbNull
+  else:  
+    memberType.tmpAttrData.setNotDbNull
+    memberType.tmpAttrData.setDateTime(value) 
+  
+  rawObject.setObjectAttributeValue(attributeIndex,memberType)
+
+
+
+
 template fetchString*( val : ptr dpiData ) : Option[string] =
     ## fetches the specified value as string. the value is copied  
     ## out of the internal buffer

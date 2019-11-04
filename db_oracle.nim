@@ -903,7 +903,7 @@ template updateBindParams(prepStmt: var PreparedStatement) =
     if bp.rowBufferSize > 1:
       if DpiResult(dpiVar_setNumElementsInArray(bp.paramVar,
                                            bp.rowBufferSize.uint32)).isFailure:
-        raise newException(IOError, "updateBindParams: " &
+        raise newException(IOError, "updateBindParams: " & $bp  & " " &
                             getErrstr(prepStmt.relatedConn.context.oracleContext))
         {.effects.}
                           
@@ -913,7 +913,7 @@ template updateBindParams(prepStmt: var PreparedStatement) =
                                      bp.paramVar
         )
       ).isFailure:
-        raise newException(IOError, "updateBindParams: " &
+        raise newException(IOError, "updateBindParams: " & $bp & " " &
                   getErrstr(prepStmt.relatedConn.context.oracleContext))
         {.effects.}
 
@@ -1024,7 +1024,6 @@ iterator resultSetRowIterator*(rs: var ResultSet): DpiRow =
       rs.rsCurrRow = 0
 
 iterator bulkBindIterator*(pstmt: var PreparedStatement,
-                           rs: var ResultSet,
                            maxRows : int,
                            maxRowBufferWindow : int): 
                               tuple[rowcounter:int,
@@ -1088,14 +1087,16 @@ template withTransaction*(dbconn: OracleConnection,
       raise
 
 
-template withPreparedStatement*(ps: var PreparedStatement, body: untyped) =
+template withPreparedStatement*(pstmt: var PreparedStatement, body: untyped) {.dirty.} =
   ## releases the preparedStatement after leaving
   ## the block.
   # FIXME: prevent nesting
-  try:
-    body
-  finally:
-    ps.destroy
+  block:
+    var ps = pstmt
+    try:
+      body
+    finally:
+      pstmt.destroy
 
 proc executeDDL*(conn: var OracleConnection,
                  sql: var SqlQuery,
@@ -1777,20 +1778,20 @@ when isMainModule:
   # and the snd is parameterised.
 
   withPreparedStatement(pstmt2):
-    discard pstmt2.addBindParameter(RefCursorColumnTypeParam,BindIdx(1))
+    discard ps.addBindParameter(RefCursorColumnTypeParam,BindIdx(1))
     # to consume the refcursor a bindParameter is needed                                   
-    discard pstmt2.addBindParameter(RefCursorColumnTypeParam,"refc2")
+    discard ps.addBindParameter(RefCursorColumnTypeParam,"refc2")
     # example of bind by name
-    discard pstmt2.addBindParameter(Int64ColumnTypeParam,BindIdx(3))
+    discard ps.addBindParameter(Int64ColumnTypeParam,BindIdx(3))
     # filter: parameter for department_id                                   
-    pstmt2[3.BindIdx].setInt64(some(80.int64))
+    ps[3.BindIdx].setInt64(some(80.int64))
 
-    pstmt2.executeStatement(rs)
+    ps.executeStatement(rs)
 
     echo "refCursor 1 results: "
     var refc: ResultSet
 
-    pstmt2.openRefCursor(1.BindIdx, refc, 1, DpiModeExec.DEFAULTMODE.ord)
+    ps.openRefCursor(1.BindIdx, refc, 1, DpiModeExec.DEFAULTMODE.ord)
     # opens the refcursor. once consumed it can't be reopended (TODO: check
     # if that's a ODPI-C limitation)
     for row in resultSetRowIterator(refc):
@@ -1799,7 +1800,7 @@ when isMainModule:
     echo "refCursor 2 results: filter with department_id = 80 "
 
     var refc2 : ResultSet
-    pstmt2.openRefCursor("refc2", refc2, 10, DpiModeExec.DEFAULTMODE.ord)
+    ps.openRefCursor("refc2", refc2, 10, DpiModeExec.DEFAULTMODE.ord)
 
     for row in resultSetRowIterator(refc2):
       echo $row[0].fetchString & " " & $row[1].fetchString
@@ -1866,7 +1867,7 @@ when isMainModule:
     conn.withTransaction: # commit after this block
       # cleanup of preparedStatement beyond this block
       var varc2 : Option[int64]
-      for i,bufferRowIdx in pstmt3.bulkBindIterator(rset,12,8):
+      for i,bufferRowIdx in ps.bulkBindIterator(12,8):
         # i: count over 13 entries - with a buffer window of 9 elements
         # if the buffer window is filled
         # contents are flushed to the database.
@@ -1876,22 +1877,22 @@ when isMainModule:
           varc2 = some(i.int64)
         # unfortunately setString/setBytes have a different
         # API than the value-parameter types
-        pstmt3[1.BindIdx][bufferRowIdx].setString(some("test_äüö" & $i)) #pk
-        pstmt3[2.BindIdx][bufferRowIdx].setInt64(varc2)
-        pstmt3[3.BindIdx][bufferRowIdx].setBytes(some(@[(0xAA+i).byte,0xBB,0xCC]))
-        pstmt3[4.BindIdx][bufferRowIdx].setFloat(some(i.float32+0.12.float32))
-        pstmt3[5.BindIdx][bufferRowIdx].setDouble(some(i.float64+99.12345.float64))
-        pstmt3[6.BindIdx][bufferRowIdx].setDateTime(some(getTime().local))
+        ps[1.BindIdx][bufferRowIdx].setString(some("test_äüö" & $i)) #pk
+        ps[2.BindIdx][bufferRowIdx].setInt64(varc2)
+        ps[3.BindIdx][bufferRowIdx].setBytes(some(@[(0xAA+i).byte,0xBB,0xCC]))
+        ps[4.BindIdx][bufferRowIdx].setFloat(some(i.float32+0.12.float32))
+        ps[5.BindIdx][bufferRowIdx].setDouble(some(i.float64+99.12345.float64))
+        ps[6.BindIdx][bufferRowIdx].setDateTime(some(getTime().local))
     # example: reuse of preparedStatement and insert another 8 rows
     # with a buffer window of 3 elements 
     conn.withTransaction:
-      for i,bufferRowIdx in pstmt3.bulkBindIterator(rset,7,2):
-        pstmt3[1.BindIdx][bufferRowIdx].setString(some("test_äüö" & $(i+13))) #pk
-        pstmt3[2.BindIdx][bufferRowIdx].setInt64(some(i.int64))
-        pstmt3[3.BindIdx][bufferRowIdx].setBytes(none(seq[byte]))   # dbNull
-        pstmt3[4.BindIdx][bufferRowIdx].setFloat(none(float32))     # dbNull
-        pstmt3[5.BindIdx][bufferRowIdx].setDouble(none(float64))    # dbNull
-        pstmt3[6.BindIdx][bufferRowIdx].setDateTime(none(DateTime)) # dbNull
+      for i,bufferRowIdx in pstmt3.bulkBindIterator(7,2):
+        ps[1.BindIdx][bufferRowIdx].setString(some("test_äüö" & $(i+13))) #pk
+        ps[2.BindIdx][bufferRowIdx].setInt64(some(i.int64))
+        ps[3.BindIdx][bufferRowIdx].setBytes(none(seq[byte]))   # dbNull
+        ps[4.BindIdx][bufferRowIdx].setFloat(none(float32))     # dbNull
+        ps[5.BindIdx][bufferRowIdx].setDouble(none(float64))    # dbNull
+        ps[6.BindIdx][bufferRowIdx].setDateTime(none(DateTime)) # dbNull
 
 
   var selectStmt: SqlQuery = osql"""select c1,c2,rawtohex(c3)
@@ -1905,7 +1906,7 @@ when isMainModule:
   # test with smaller window: 5 rows are buffered internally for reading
 
   withPreparedStatement(pstmt4): 
-    pstmt4.executeStatement(rset4)
+    ps.executeStatement(rset4)
     for row in resultSetRowIterator(rset4):       
       echo $row[0].fetchString & "  " & $row[1].fetchInt64 & 
             " " & $row[2].fetchString & 
@@ -1953,14 +1954,14 @@ when isMainModule:
   
   withPreparedStatement(callFunc):
     # call the function with direct parameter access 
-    let param1 = callFunc.addBindParameter(newStringColTypeParam(50),BindIdx(1))
-    let param2 = callFunc.addBindParameter(newStringColTypeParam(20),BindIdx(2))
-    let param3 = callFunc.addBindParameter(newStringColTypeParam(20),BindIdx(3))
-    let param4 = callFunc.addBindParameter(newStringColTypeParam(20),BindIdx(4))
+    let param1 = ps.addBindParameter(newStringColTypeParam(50),BindIdx(1))
+    let param2 = ps.addBindParameter(newStringColTypeParam(20),BindIdx(2))
+    let param3 = ps.addBindParameter(newStringColTypeParam(20),BindIdx(3))
+    let param4 = ps.addBindParameter(newStringColTypeParam(20),BindIdx(4))
     # direct param access in this example
     param2.setString(some("teststr äüö")) 
     param3.setString(some("p2"))
-    callFunc.executeStatement(callFuncResult) 
+    ps.executeStatement(callFuncResult) 
     var r1 = param1.fetchString()
     # fetch functions result
     var r3 = param3.fetchString()
@@ -2054,7 +2055,8 @@ when isMainModule:
       # initialize string fields and call the aggregate udf
       copyOfColl[0][objtype,1] = some("hello nim! ")
       copyOfColl[1][objtype,1] = some("from oracle ")
-
+      copyOfColl[0][objtype,4] = some(getTime().local)
+      copyOfColl[1][objtype,4] = some(getTime().local)
       # TODO: call the procedure with select statement
       # in another example
       var demoCallAggr = osql"""begin :1 := HR.DEMO_COLAGGR(:2); end; """
@@ -2064,10 +2066,10 @@ when isMainModule:
       
       withPreparedStatement(callFuncAggr):
         # call the function with direct parameter access 
-        let param1 = callFuncAggr.addBindParameter(newStringColTypeParam(500),BindIdx(1))
-        let param2 = callFuncAggr.addObjectBindParameter(BindIdx(2),colltype,5)
+        let param1 = ps.addBindParameter(newStringColTypeParam(500),BindIdx(1))
+        let param2 = ps.addObjectBindParameter(BindIdx(2),colltype,5)
         param2.setObject(0,copyOfColl) # todo: consolidate API
-        callFuncAggr.executeStatement(callFuncResult) 
+        ps.executeStatement(callFuncResult) 
         var r1 = param1.fetchString()
         echo r1
 
@@ -2077,9 +2079,36 @@ when isMainModule:
                                  create table HR.NDEMO (
                                    ntestname varchar2(30),
                                    testcol hr.demo_coll)
-                                nested table testcol store as democolltab
+                                nested table testcol store as nested_demo_coll
                               """
       conn.executeDDL(nestedtabStmt)
+      var nestedtableInsert = osql""" insert into HR.NDEMO(NTESTNAME,TESTCOL) values (:1,:2) """
+      
+      var nInsertPstmt : PreparedStatement
+      var nInsertRset : ResultSet
+      newPreparedStatement(conn,nestedtableInsert,nInsertPstmt,10)
+
+      withPreparedStatement(nInsertPstmt):
+        # TODO: always inject a local var pstmt.
+        conn.withTransaction:
+          let param1 = ps.addArrayBindParameter(
+                                    newStringColTypeParam(30),
+                                    BindIdx(1),10)
+          let param2 = ps.addObjectBindParameter(BindIdx(2),colltype,10)
+                    
+          for i,bufferRowIdx in ps.bulkBindIterator(5,0):
+            # commit after each row required or 
+            # the objects contents are overwritten
+            copyOfColl[0][objtype,1] = some("hello nim! round " & $i)
+            copyOfColl[1][objtype,1] = some("from oracle ")
+            copyOfColl[0][objtype,4] = some(getTime().local)
+            copyOfColl[1][objtype,4] = some(getTime().local)
+              # update object per round
+            ps[1.BindIdx][bufferRowIdx].setString(some("testname " & $i))
+            ps[2.BindIdx].setObject(bufferRowIdx,copyOfColl)
+            # TODO: consolidate api
+
+      
 
       # var demoCallAggr2 = osql""" select * from HR.NDEMO """
       # var callFuncAggr2 : PreparedStatement
