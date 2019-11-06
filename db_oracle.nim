@@ -59,12 +59,19 @@ import nimodpi
     - version 18c also supports partitioning, PDB's and so on.
     -
     - database resident connection pool is not tested but should work
-    -
-    - TODO: more types,bulk binds, implement tooling for
-      easier sqlplus exploitaition,
-    - tooling for easy compiletime-query validation,
-      continous query notification, examples
-
+    - 
+    - some definitions: 
+    - read operation is database->client direction.
+    - write operation is client -> database direction.
+    - 
+    - TODO:
+      * move object related API into own module 
+      * object type API needs to be reviewed (resultset/binds) (at the
+        moment the object type needs to be specified for resultset obj access) 
+        and the API itself is not easy enough.
+      * implement tooling for easier sqlplus exploitaition
+      * tooling for easy compiletime-query validation,
+        continous query notification, examples
     ]#
 
 type
@@ -103,17 +110,20 @@ type
     # tracks the native- and dbtype
     objectTypeHandle : ptr dpiObjectType
     # object type handle for plsql types
-    # FIXME: autoeval within resultSet/move2columnType
+    # does not to be freed - owner is dpiQueryInfo
+    rObjTypeInfo : ptr dpiObjectTypeInfo
+    # result object type info - only populated 
+    # for result parameters at the moment
+    rAttributeHdl : seq[ptr dpiObjectAttr]
+    # result attribute handle
+    # needed for reading/writing attributes
+    # handles to the attributes
+    rAttributeInfo : seq[dpiObjectAttrInfo]
     paramVar: ptr dpiVar
     # ODPI-C ptr to the variable def
     buffer: ptr dpiData
     # ODPI-C ptr to the variables data buffer
     # provided by ODPI-C
-    rawHsMemory : ptr byte
-    # FIXME: check if needed
-    # raw handshake memory. used for pointer types.
-    # an entire block is allocated according to the maxlen
-    # of the type and the rowbuffersize
     rowBufferSize: int
     isPlSqlArray: bool
     isFetched: bool
@@ -193,18 +203,24 @@ type
   # type alias
 
   DpiRow* = object
-    rset : ResultSet 
+    rset : ptr ResultSet 
     rawRow : seq[ptr dpiData]
     ## contains all data pointers of the current iterated row
     ## of the ResultSet
+    ## FIXME: objectType: wrap the raw ptr so that the corresponding
+    ## type can be retrieved. at the moment the caller needs to
+    ## specify the object-type to fetch the object-members.
 
   OracleObjType* = object
-    ## wrapper for the object type database handles
+    ## thin wrapper for the object type database handles.
+    ## these type of objects need to be disposed if no longer needed.
+    ## used for read or write operations.
     relatedConn : OracleConnection
     baseHdl : ptr dpiObjectType
     objectTypeInfo : dpiObjectTypeInfo
     isCollection : bool
     elementTypeInfo : dpiDataTypeInfo
+    helpObjectAttrInfo : dpiObjectAttrInfo
     # the type of the collections member
     attributes : seq[ptr dpiObjectAttr]
     # only populated if the type is not a collection
@@ -217,7 +233,9 @@ type
 
   OracleObj* = object of RootObj
     ## thin wrapper for an object instance
-    ## related to a specific type handle
+    ## related to a specific type handle. this kind of
+    ## object need to be disposed if no longer needed.
+    ## typically used for write operations (client->database).
     objType : OracleObjType
     objHdl : ptr dpiObject
     # the odpi-c object handle
@@ -230,11 +248,39 @@ type
     # FIXME: evaluate if needed
    
   OracleCollection* = object of OracleObj
-    ## thin wrapper for a collection type element
+    ## thin wrapper for a collection type element.
+    ## this kind of object need to be disposed if no
+    ## longer needed.
     elementHelper : ptr dpiData
     # helper to add/fetch elements by attribute.
     # the type of the element is of objType.elementTypeInfo
-  
+
+type  
+  OracleObjR* = object of RootObj
+    ## thin wrapper for object read operations.
+    ## these instances created out of a resultset
+    ## and does not need disposal if no longer needed.
+    ## these handles stay valid till the next prefetch
+    ## happens
+    ## TODO: implement / construct obj out of dpiData
+    ## introduce memory pool?
+    objHdl : ptr dpiObject
+    typeHdl : ptr dpiObjectType
+    ## handle to object-type
+    objTypeInfo : ptr dpiObjectTypeInfo
+    attributeHdl : seq[ptr dpiObjectAttr]
+    # needed for reading/writing attributes
+    # handles to the attributes
+    attributeInfo : seq[dpiObjectAttrInfo]
+
+  OracleCollectionR* = object of OracleObjR
+    ## this wrapper for object read operations.
+    ## these instances created out of a read operation
+    ## and does not need disposal if no longer needed
+    ## TODO: implement / construct obj out of dpiData
+    datTypeInfo : ptr dpiDataTypeInfo 
+
+type
   Lob* = object
     ## TODO: implement
     lobtype : ParamType
@@ -271,20 +317,22 @@ template `[]`*(row: DpiRow, colname: string): ptr dpiData =
   var cellptr : ptr dpiData = cast[ptr dpiData](0)
   for i in row.rawRow.low .. row.rawRow.high:
     if cmp(colname, row.rset.rsOutputCols[i].columnType.name) == 0:
+      # specified row found
       cellptr = row.rawRow[i]
       break;
   cellptr
 
 template `[]`*(row: DpiRow, index : int ): ptr dpiData =
   ## access of the iterators dataCell by index (starts with 0)
-  var cellptr = row.rawRow[index]
-  cellptr  
+  row.rawRow[index]  
+
+template toObject*( val : ptr dpiData) : ptr dpiObject =
+  val.value.asObject
 
 template `[]`(data: ptr dpiData, idx: int): ptr dpiData =
   ## direct access of a column's cell within the columnbuffer by index.
-  ## internal - used by DpiRow for calculating the ptr
+  ## internal - used by DpiRow for calculating the ptr. 
   cast[ptr dpiData]((cast[int](data)) + (sizeof(dpiData)*idx))
-
 
 template `[]`*(rs: ParamTypeRef, rowidx: int): ptr dpiData =
   ## selects the row of the specified column
@@ -723,6 +771,21 @@ proc addObjectBindParameter*(ps: var PreparedStatement,
   newVar(ps, result)
   ps.boundParams.add(result)
 
+template destroy(rsVar : ParamTypeRef , prepStmt : var PreparedStatement) =
+  ## internal release of the paramtype refs
+  ## odpic handles
+  if rsVar.rAttributeHdl.len > 0:
+    # frees Attribut
+    for i in rsVar.rAttributeHdl.low .. rsVar.rAttributeHdl.high:
+      discard dpiObjectAttr_release(rsVar.rAttributeHdl[i])
+
+  if DpiResult(dpiVar_release(rsVar.paramVar)).isFailure:
+    raise newException(IOError, "destroy: " &
+        getErrstr(prepStmt.relatedConn.context.oracleContext))
+    {.effects.}
+  # dpiObjectAttr_release(dpiObjectAttr *attr)
+  # since all handles are retrieved by dpiQueryInfo
+  # we do not need to free these handles explicitly
 
 
 proc destroy*(prepStmt: var PreparedStatement) =
@@ -733,16 +796,10 @@ proc destroy*(prepStmt: var PreparedStatement) =
   ## are also freed. a preparedStatement with refCursor can not
   ## be reused.
   for i in prepStmt.boundParams.low .. prepStmt.boundParams.high:
-    if DpiResult(dpiVar_release(prepStmt.boundParams[i].paramVar)).isFailure:
-      raise newException(IOError, "destroy: " &
-          getErrstr(prepStmt.relatedConn.context.oracleContext))
-      {.effects.}
+    prepStmt.boundParams[i].destroy(prepStmt)
     
   for i in prepStmt.rsOutputCols.low .. prepStmt.rsOutputCols.high:
-    if DpiResult(dpiVar_release(prepStmt.rsOutputCols[i].paramVar)).isFailure:
-      raise newException(IOError, "destroy: " &
-          getErrstr(prepStmt.relatedConn.context.oracleContext))
-      {.effects.}
+    prepStmt.rsOutputCols[i].destroy(prepStmt)
       
   prepStmt.boundParams.setLen(0)
   prepStmt.rsOutputCols.setLen(0)
@@ -792,8 +849,9 @@ proc executeAndInitResultSet(prepStmt: var PreparedStatement,
       raise newException(IOError, "executeAndInitResultSet: " &
             getErrstr(prepStmt.relatedConn.context.oracleContext))
       {.effects.}
-                          
+ 
     var qInfo: dpiQueryInfo
+    
     for i in countup(1, prepStmt.columnCount.int):
       # extract needed params out of the metadata
       # the columnindex starts with 1
@@ -805,7 +863,7 @@ proc executeAndInitResultSet(prepStmt: var PreparedStatement,
         raise newException(IOError, "executeAndInitResultSet: " &
                           getErrstr(prepStmt.relatedConn.context.oracleContext))
         {.effects.}
-                                                                           
+                                                                     
       var colname = newString(qInfo.nameLength)
       copyMem(addr(colname[0]), qInfo.name.ptr, colname.len)
 
@@ -825,11 +883,24 @@ proc executeAndInitResultSet(prepStmt: var PreparedStatement,
                           precision : qinfo.typeinfo.precision,
                           fsPrecision : qinfo.typeinfo.fsPrecision
                           ),
+                          objectTypeHandle : qinfo.typeinfo.objectType,
                           paramVar: nil,
                           buffer: nil,
                           rowBufferSize: prepStmt.bufferedRows)
                           # each out-resultset param owns the rowbuffersize
                           # of the prepared statement
+      # TODO: if the objectType is not nil, query the number of attributes
+      # and the object-type
+      if not prepStmt.rsOutputCols[i-1].objectTypeHandle.isNil:
+        discard # TODO
+        # get number of attributes with:
+        # dpiObjectType_getInfo(dpiObjectType *objType, dpiObjectTypeInfo *info)
+        # get the attributes handles with:
+        # int dpiObjectType_getAttributes(dpiObjectType 
+        # *objType, uint16_t numAttributes, dpiObjectAttr **attributes)
+      else:
+        prepStmt.rsOutputCols[i-1].rAttributeHdl = @[]
+
       newVar(prepStmt,prepStmt.rsOutputCols[i-1])
       if DpiResult(dpiStmt_define(prepStmt.pStmt,
                                   (i).uint32,
@@ -993,11 +1064,16 @@ template fetchNextRows*(rs: var ResultSet) =
         getErrstr(rs.relatedConn.context.oracleContext))
       {.effects.}
   
-iterator columnTypesIterator*(rs : var ResultSet) : tuple[idx : int, ct: ColumnType] = 
+iterator resultColumnTypeIterator*(rs : var ResultSet) : tuple[idx : int, ct: ColumnType] = 
   ## iterates over the resultSets columnTypes if present
   for i in countup(rs.rsOutputCols.low,rs.rsOutputCols.high):
     yield (i,rs[i].columnType)
 
+iterator resultParamTypeIterator*(rs : var ResultSet) : tuple[idx : int, pt : ParamTypeRef] =
+  ## iterates over the resultsets parametertypes if present
+  for i in countup(rs.rsOutputCols.low,rs.rsOutputCols.high):
+    yield (i,rs[i])
+ 
 iterator resultSetRowIterator*(rs: var ResultSet): DpiRow =
   ## iterates over the resultset row by row. no data copy is performed
   ## and the ptr type values should be copied into the application
@@ -1007,7 +1083,7 @@ iterator resultSetRowIterator*(rs: var ResultSet): DpiRow =
   ## in an error case an IOException is thrown with the error message retrieved
   ## out of the context.
   var p: DpiRow = DpiRow(rawRow : newSeq[ptr dpiData](rs.rsOutputCols.len), 
-                         rSet : rs)
+                         rSet : rs.addr)
   rs.rsCurrRow = 0
   rs.rsRowsFetched = 0
 
@@ -1330,7 +1406,9 @@ proc getObjectAttributeValue( handle : ptr dpiObject,
                               objtype : OracleObjType) : ptr dpiData  =
   ## retrieves the object attribute by type and raw dpiObject handle.
   ## the object handle can be retrieved out of a dpiData handle
-  ## with help of the template getObjectHandle                         
+  ## with help of the template getObjectHandle. the internal tmpAttrData
+  ## is populated. the pointer stays valid till owning object is released  
+  ## base proc on attribute types (get)                       
   if DpiResult(dpiObject_getAttributeValue(
                 handle,
                 objtype.attributes[idx],
@@ -1375,12 +1453,11 @@ proc setAttributeValue( obj : OracleObj, idx: int ) =
       getErrstr(obj.objType.relatedConn.context.oracleContext))
     {.effects.}    
 
-
 template `[]`(obj: OracleObj, colidx: int): ptr dpiData =
   ## internal template to obtain the dpiData pointer for each
-  ## attribute
+  ## attribute. used in setfetchtypes.nim to get/set an attribute value
   obj.bufferedColumn[colidx]
-  # FIXME: eval if buffering needed
+  # FIXME: eval if buffering needed (-> not really)
   
 proc copyOracleObj*( obj : OracleObj ) : OracleObj =
   ## copies an object and returns a new independent new one
@@ -1585,6 +1662,10 @@ proc getElementValueFromBackend(collObj : OracleCollection,
     {.effects.}    
   return collObj.elementHelper
 
+proc getElementValue( srcObj : ptr dpiData, srcType : OracleObjType, idx : int) : ptr dpiObject =
+  # returns the value dpiObject *dpiData_getObject(dpiData *data)
+  discard
+
 proc setCollectionElement(collObj : OracleCollection, 
                             index : int, 
                             value : OracleObj) =
@@ -1624,8 +1705,8 @@ template `[]`*(obj: OracleCollection, colidx: int) : ptr dpiObject  =
 template `[]`*(rawObject : ptr dpiObject, 
                memberType: OracleObjType,
                attributeIndex: int) : ptr dpiData  =
-  ## getter template to obtain the dpiData pointer for each
-  ## collection element . 
+  ## raw getter template to obtain the dpiData pointer for each
+  ## attribute of the specified object.  
   rawObject.getObjectAttributeValue(attributeIndex,memberType)
 
 
@@ -1720,7 +1801,7 @@ when isMainModule:
   # execute the statement. if the resulting rows
   # fit into entire window we are done here.
  
-  for i,ct in rs.columnTypesIterator:
+  for i,ct in rs.resultColumnTypeIterator:
     echo "cname:" & rs.rsColumnNames[i] & " colnumidx: " & 
       $(i+1) & " " & $ct
 
@@ -2070,9 +2151,8 @@ when isMainModule:
         let param2 = ps.addObjectBindParameter(BindIdx(2),colltype,5)
         param2.setObject(0,copyOfColl) # todo: consolidate API
         ps.executeStatement(callFuncResult) 
-        var r1 = param1.fetchString()
-        echo r1
-
+        echo $param1.fetchString()
+   
       # same example with invocation from sql 
       # FIXME: not working because we need to define a nested table
       var nestedtabStmt = osql"""
@@ -2103,12 +2183,48 @@ when isMainModule:
             copyOfColl[1][objtype,1] = some("from oracle ")
             copyOfColl[0][objtype,4] = some(getTime().local)
             copyOfColl[1][objtype,4] = some(getTime().local)
-              # update object per round
+            copyOfColl[1][objtype,5] = some(@[(0xAA+i).byte,0xBB,0xCC])
+            # feed the copyOfColl collection
+            # update object per round
             ps[1.BindIdx][bufferRowIdx].setString(some("testname " & $i))
-            ps[2.BindIdx].setObject(bufferRowIdx,copyOfColl)
-            # TODO: consolidate api
+            # access the cell via prepared statement and bindindex
+            param2.setObject(bufferRowIdx,copyOfColl)
+            # access the cell directly via the bind parameter
+            
 
-      
+      echo "insert finished "
+      var nestedtableSelect = osql" select NTESTNAME,TESTCOL from HR.NDEMO "
+      var nSelectPstmt : PreparedStatement
+      var nSelectRset : ResultSet
+      newPreparedStatement(conn,nestedtableSelect,nSelectPstmt,10)
+
+
+      withPreparedStatement(nSelectPstmt):
+        echo "before execute"
+        ps.executeStatement(nSelectRset) 
+
+        echo "executed"
+        # eval the result columns:
+        for i,pt in resultParamTypeIterator(nSelectRset):
+          echo "column: " & $i & " type: " & $pt
+        
+        for row in resultSetRowIterator(nSelectRset):       
+             echo $row[0].fetchString
+             # FIXME: readout object 
+             
+             # TODO: consolidate api. difference between parameter access:
+             # (readout binds: paramTypeRef[rowidx]->ptr dpiData ) and resultset:
+             # dpiRow[columnIndex] -> dpiData
+             # and preparedStatement[columnIndex]->paramTypeRef 
+             # with the dpiDataPointer.asObject->ptr dpiObject and the objectType
+             # its possible to readout the attributes-tree 
+             # dpiObject_getAttributeValue -> raw_attributes
+             # dpiObject_getElementValue -> next nested obj
+             # FIXME: metadata missing for dpiRow/dpiRowElement
+             # -> lowlevel API on dpiObjects / dpiAttributes
+             # -> highlevel API which returns populated OracleObj/OracleCollection
+
+      # TODO: never tried to filter against a nested-table object
 
       # var demoCallAggr2 = osql""" select * from HR.NDEMO """
       # var callFuncAggr2 : PreparedStatement
@@ -2122,9 +2238,7 @@ when isMainModule:
 
       #  for row in resultSetRowIterator(callFuncResultAggr2):       
       #    echo $row[0].fetchString
-      
-      # todo: test bulk collect the collectionobjects into the hr.testtable
-      
+           
       # drop tab with nested table
       var dropNDEMOTab = osql"drop table HR.NDEMO "
       conn.executeDDL(dropNDEMOTab)

@@ -1,5 +1,13 @@
 # fetching/setting templates for raw odpi-c access
-# and nim types ParamTypeRef, OracleObj 
+# and nim types ParamTypeRef, OracleObj, OracleCollection
+#
+# Remark: setter always operate on dpiVar so the memory is
+# managed by ODPI-C. getter value types are always copied.
+# so the pointer types (bytes/string) in case of Option is
+# returned. 
+# TODO: macro to generate the fetch/set templates/proc for each
+# datatype or use generics
+
 template fetchBoolean*(val : ptr dpiData) : Option[bool] =
     ## fetches the specified value as boolean. the value is copied
     if val.isDbNull:
@@ -421,6 +429,24 @@ proc `[]=`*(rawObject : ptr dpiObject,
 
   rawObject.setObjectAttributeValue(attributeIndex,memberType)
 
+proc `[]=`*(rawObject : ptr dpiObject, 
+            memberType: OracleObjType,
+            attributeIndex: int,   
+            value: Option[seq[byte]] )  =
+  ## setter proc to populate the dpiData pointer for the
+  ## specified member type
+  ## FIXME: provide setter and getter for all native types
+  if value.isNone:
+    memberType.tmpAttrData.setDbNull
+  else:  
+    memberType.tmpAttrData.setNotDbNull
+    var p = value.get
+    memberType.tmpAttrData.value.asBytes.ptr = cast[cstring](p[0].addr)
+    memberType.tmpAttrData.value.asBytes.length = p.len.uint32
+
+  rawObject.setObjectAttributeValue(attributeIndex,memberType)
+  # content is copied here into odpi-c domain
+
 
 template setString*( param : OracleObj , 
                      attrName : string,  
@@ -447,7 +473,9 @@ template fetchBytes*( param : OracleObj , attrName : string) : Option[seq[byte]]
   ## access template for db-types
   getAttributeValue(param,lookUpAttrIndexByName(attrName)).fetchBytes
 
-template setBytes*( val : ptr dpiData, value : Option[seq[byte]] ) = 
+
+template setBytes*( val : ptr dpiData, value : Option[seq[byte]] ) =
+  ## raw template to write the value into dpiVal's memory 
   if value.isNone:
     val.setDbNull
   else:
@@ -468,9 +496,10 @@ template setBytes*( param : OracleObj ,
     param[index].setDbNull
   else:
     st = value.get
-    param[index].dpiData_setBytes( param[index], 
-                                   addr(st[0]), 
-                                   st.len.uint32 ) 
+    setBytes(param[index],value)
+    #dpiData_setBytes( param[index], 
+    #                               addr(st[0]), 
+    #                               st.len.uint32 ) 
   setAttributeValue(param,index)
 
 template setBytes*( param : OracleObj , 
