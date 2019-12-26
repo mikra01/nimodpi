@@ -5,11 +5,11 @@ Oracle ODPI-C wrapper for Nim
  
 ### dependencies
 - Oracle Instant Client (see ODPI-C Documentation for details)
-- nimterop 
+- [nimterop](https://github.com/nimterop/nimterop) 
 
 ### how to install
 clone this project directly or use "nimble install nimodpi".
-then import "db_oracle" within your project. 
+then import the module "db_oracle" within your project. 
 the dependent ODPI-C source is directly included into your project (via nimterop) 
 
 See the "isMainModule" section at the end of the module for some examples.
@@ -21,7 +21,7 @@ See /demo/demo.nim for some direct ODPI-C examples.
 The subdir /demo also contains an example how sqlplus could be utilised for script execution.
 
 ### Remarks
-I tested it only for the IA64 architecture and only tested against
+I tested the impl. only for the IA64 architecture with
 nim-compiler version 1.0.2. 
 The API could be subject of change.
 
@@ -67,5 +67,7 @@ this demo executes some DDL and performs a cleanup.
 direct bindings almost completed except SODA; 
 the nimish abstraction layer (db_oracle) is functional but more examples needed.
 next steps would be provide documented examples and cleanup of some quirks.
+
+Update(Dec. 2019): I've implemented typed objects and nested tables(unpublished at the moment). In January 2019 I will do some rework of the API to get seamless integration with these object types (blob's included). The Nim target version will be 1.0.4.
 
 Comments, bug reports and PR´s appreciated.
