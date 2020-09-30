@@ -14,16 +14,15 @@ the dependent ODPI-C source is directly included into your project (via nimterop
 
 See the "isMainModule" section at the end of the module for some examples.
 
-Besides the abstraction layer you can also consume the raw API if something is
+Besides the abstraction layer you can also consume the raw ODPI-C API if something is
 missing ( or PR me your solution ).
 
 See /demo/demo.nim for some direct ODPI-C examples. 
 The subdir /demo also contains an example how sqlplus could be utilised for script execution.
 
 ### Remarks
-I tested the impl. only for the IA64 architecture with
-nim-compiler version 1.0.2. 
-The API could be subject of change.
+upgraded to Nim Compiler Version 1.2.6, ODPI-C 4.0.2 and nimterop 0.6.11
+The NIM-API could be subject of change.
 
 ### Oracle XE installation
 For testing just install a local copy of the oracle xe:
@@ -31,8 +30,8 @@ https://www.oracle.com/database/technologies/appdev/xe.html
 
 The oracle instant client is already included.
 
-I tested it only for the windows 10 OS - if you face problems while installing xe onto
-your machine the installer logs everything under the program files directory within the subdirectory
+Tests only against windows 10 OS - if you face problems while installing xe onto
+your machine: the installer logs everything under the program files directory within the subdirectory
 /Oracle/Inventory/logs. Before installing make sure a third party virus scanner is disabled.
 (I faced no problems with the windows defender).
 
@@ -49,7 +48,7 @@ WHERE parameter IN ( 'NLS_CHARACTERSET', 'NLS_LANGUAGE', 'NLS_TERRITORY')
 /
 ```
 
-If you like to browse the schemas use Oracle SQL Developer.
+If you like to browse the schemas use Oracle SQL Developer for instance.
 Future examples will be based on the HR schema. 
 This user is locked by default so the examples will only work if you use
 sysdba for the connecting user.
@@ -67,7 +66,5 @@ this demo executes some DDL and performs a cleanup.
 direct bindings almost completed except SODA; 
 the nimish abstraction layer (db_oracle) is functional but more examples needed.
 next steps would be provide documented examples and cleanup of some quirks.
-
-Update(Dec. 2019): I've implemented typed objects and nested tables(unpublished at the moment). In January 2019 I will do some rework of the API to get seamless integration with these object types (blob's included). The Nim target version will be 1.0.4.
 
 Comments, bug reports and PR´s appreciated.

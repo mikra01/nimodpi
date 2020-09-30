@@ -6,8 +6,8 @@ license = "MIT"
 skipDirs = @["demo"]
 
 # Dependencies
-requires "nim >= 0.19.6"
-requires "nimterop >= 0.1.0"
+requires "nim >= 1.2.6"
+requires "nimterop >= 0.6.11"
 
 
 task demo, "running demo":

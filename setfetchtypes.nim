@@ -5,7 +5,7 @@
 # managed by ODPI-C. getter value types are always copied.
 # so the pointer types (bytes/string) in case of Option is
 # returned. 
-# TODO: macro to generate the fetch/set templates/proc for each
+# TODO: macro to auto-generate the fetch/set templates/proc for each
 # datatype or use generics
 
 template fetchBoolean*(val : ptr dpiData) : Option[bool] =
@@ -138,7 +138,7 @@ template setDouble*( param : OracleObj ,
   setDouble(param,lookUpAttrIndexByName(param,attrName),value)
 
 proc `[]=`*(rawObject : ptr dpiObject, 
-            memberType: OracleObjType,
+            memberType: var OracleObjType,
             attributeIndex: int,   
             value: Option[float64] )  =
   ## getter setter proc populate the dpiData pointer for the
@@ -342,7 +342,7 @@ template setDateTime*( param : OracleObj ,
   setDateTime(param,lookUpAttrIndexByName(param,attrName),value)
 
 proc `[]=`*(rawObject : ptr dpiObject, 
-            memberType: OracleObjType,
+            memberType: var OracleObjType,
             attributeIndex: int,   
             value: Option[DateTime] )  =
   ## getter setter proc populate the dpiData pointer for the
@@ -355,8 +355,6 @@ proc `[]=`*(rawObject : ptr dpiObject,
     memberType.tmpAttrData.setDateTime(value) 
   
   rawObject.setObjectAttributeValue(attributeIndex,memberType)
-
-
 
 
 template fetchString*( val : ptr dpiData ) : Option[string] =
@@ -376,11 +374,11 @@ template fetchString*( param : ParamTypeRef) : Option[string] =
 #  ## internal buffer
 #  param[rownum].fetchString
 
-template fetchString*( param : OracleObj , index : int) : Option[string] =
+template fetchString*( param : var OracleObj , index : int) : Option[string] =
   ## access template for db-types
   getAttributeValue(param,index).fetchString
 
-template fetchString*( param : OracleObj , 
+template fetchString*( param : var OracleObj , 
                        attrName : string) : Option[string] =
   ## access template for db-types
   getAttributeValue(param,lookUpAttrIndexByName(attrName)).fetchString
@@ -413,7 +411,7 @@ template setString*( param : OracleObj ,
   setAttributeValue(param,index)
 
 proc `[]=`*(rawObject : ptr dpiObject, 
-            memberType: OracleObjType,
+            memberType: var OracleObjType,
             attributeIndex: int,   
             value: Option[string] )  =
   ## getter setter proc populate the dpiData pointer for the
@@ -430,7 +428,7 @@ proc `[]=`*(rawObject : ptr dpiObject,
   rawObject.setObjectAttributeValue(attributeIndex,memberType)
 
 proc `[]=`*(rawObject : ptr dpiObject, 
-            memberType: OracleObjType,
+            memberType: var OracleObjType,
             attributeIndex: int,   
             value: Option[seq[byte]] )  =
   ## setter proc to populate the dpiData pointer for the
@@ -528,10 +526,11 @@ template fetchRefCursor*(param : ptr dpiData ) : ptr dpiStmt =
     ## fetches a refCursorType out of the result column. 
     param.value.asStmt
   
-
 template setLob*(param : ptr dpiLob, value : Option[seq[byte]] , rownum : int = 0) =
   # use: int dpiVar_setFromLob(dpiVar *var, uint32_t pos, dpiLob *lob)
+  #FIXME : implement
   discard
 
 template getLob*(param : ptr dpiLob ) : Option[seq[byte]]  =
+  #FIXME : implement
   discard
