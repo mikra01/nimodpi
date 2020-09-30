@@ -10,8 +10,8 @@ import result
 # TODO: testing against timesten
 
 #[
- this demo contains three examples (just select stmt - no ddl executed - statements
- can be found in demosql.nim )
+ this demo (it consumes ODPI-C directly) contains three examples 
+ (just select stmt - no ddl executed - statements can be found in demosql.nim )
    - setting clients encoding 
    - simple fetch
    - fetch with fetchRows (additional types double,raw,timestamp,big_number as string)
@@ -224,7 +224,7 @@ var commonParams: dpiCommonCreateParams
 var connectionParams : dpiConnCreateParams
 # globals
 
-let errno = dpiContext_create(DPI_MAJOR_VERSION, DPI_MINOR_VERSION, addr(
+let errno = dpiContext_createWithParams(DPI_MAJOR_VERSION, DPI_MINOR_VERSION, nil, addr(
     context), addr(errorinfo))
 if errno == DpiResult.SUCCESS.ord:
   echo "context_created"
