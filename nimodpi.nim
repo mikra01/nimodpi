@@ -31,7 +31,7 @@ static:
 include/*.h
 embed/*.c
 src/*
-""", checkout = "master") # master is 3.2 so far
+""", checkout = "tags/v4.0.2")
   # if a specific version is desired, pull the odpi version manually into the 
   # subdirectory /build/
 
