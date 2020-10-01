@@ -24,7 +24,7 @@ const
 
 static:
   cDebug()
-  cDisableCaching()
+  # cDisableCaching()
 
   gitPull("https://github.com/oracle/odpi.git", outdir = srcDir,
       plist = """

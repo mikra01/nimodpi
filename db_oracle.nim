@@ -33,7 +33,7 @@ import nimodpi
       clumpsy workaround solutions.
       due to that a generic API is out of scope of this project.
       it's more valueable to wrap the vendor
-      specific parts into a own module with a
+      specific parts into an own module with a
       question/answer style API according to the business-case
     -
     - besides the connections there are three basic important objects:
@@ -51,7 +51,7 @@ import nimodpi
     - the context can be shared between threads according to the
       ODPI-C documentation (untested).
     - index-access of a resultset is not bounds checked.
-    - if a internal error happens, execution is terminated
+    - if an internal error happens, execution is terminated
       and the cause could be extracted with the
     - template getErrstr out of the context.
     -
@@ -212,17 +212,17 @@ type
     ## specify the object-type to fetch the object-members.
 
   OracleObjType* = object
-    ## thin wrapper for the object type database handles.
+    ## thin wrapper for the object type database handle.
     ## these type of objects need to be disposed if no longer needed.
     ## used for read or write operations for both types and collections.
     relatedConn : OracleConnection
     baseHdl : ptr dpiObjectType
     objectTypeInfo : dpiObjectTypeInfo
     isCollection : bool
-    elementTypeInfo : dpiDataTypeInfo
-    childObjectTypeInfo : dpiObjectTypeInfo
+    elementDataTypeInfo : dpiDataTypeInfo
+    elementObjectTypeInfo : dpiObjectTypeInfo
     # the type of the collections member
-    # elementTypeInfo and childObjectTypeInfo only valid
+    # elementDataTypeInfo and elementObjectTypeInfo only valid
     # for collection types
 
     attributes : seq[ptr dpiObjectAttr]
@@ -232,7 +232,9 @@ type
     # same order (for non collection types)
     tmpAttrData : ptr dpiData
     # allocated area for fetching/setting attributes
-    # by dpiObject handle
+    # by dpiObject handle 
+    # FIXME: remove - bind data related handles only to the 
+    # object and not the object type
 
   OracleObj* = object of RootObj
     ## thin wrapper for an object instance
@@ -255,12 +257,7 @@ type
     ## this kind of object need to be disposed if no
     ## longer needed.
     elementHelper : ptr dpiData
-    # collectionType : ref OracleObjType
-    # childObjectType : ref OracleObjType 
-
-    # helper to add/fetch elements by attribute.
-    # the type of the element is of objType.elementTypeInfo
-    # FIXME: macro to dealloc automatically the handles
+    # one dpiData chunk 
 
 type
   Lob* = object
@@ -274,8 +271,11 @@ type
                      BLOB = DpiOracleType.OTBLOB
                 
 include odpi_obj2string
+# contains some utility templates for object to string conversion (debug)
 include odpi_to_nimtype
-include nimtype_to_odpi                  
+# some helper template for dealing with byte sequences/date types
+include nimtype_to_odpi
+# helper templates for copying nim types into ODPI-C domain                  
 
 template newStringColTypeParam*(strlen: int): ColumnType =
   ## helper to construct a string ColumnType with specified len
@@ -451,6 +451,7 @@ proc createConnection*(octx: var OracleContext,
                          stmtCacheSize : int = 50) =
   ## creates a connection for the given context and credentials.
   ## throws IOException in an error case
+  #FIXME: check wallet operation
   ocOut.context = octx
   if DpiResult(dpiConn_create(octx.oracleContext, username.cstring,
     username.cstring.len.uint32,
@@ -519,7 +520,7 @@ proc newPreparedStatement*(conn: var OracleConnection,
   ## to the given specified query.
   ## the statement cache key is optional.
   ## throws IOException in an error case
-  outPs.scrollable = false # always false due to not implemented
+  outPs.scrollable = false # always false due to missing implementation
   outPs.query = cast[cstring](query)
   outPs.columnCount = 0
   outPs.relatedConn = conn
@@ -609,8 +610,8 @@ proc addBindParameter*(ps: var PreparedStatement,
   ## see https://oracle.github.io/odpi/doc/user_guide/data_types.html
   ## for supported type combinations of ColumnType.
   ## the parametername must be referenced within the
-  ## query with :<paramName>
-  ## after adding the parameter value can be set with the typed setters
+  ## query with colon. example :<paramName>
+  ## after adding the parameter, the value can be set with the typed setters
   ## on the ParamType. the type of the parameter is implicit in,out or in/out.
   ## this depends on the underlying query
   result = newParamTypeRef(ps, BindInfo(kind: BindInfoType.byName,
@@ -627,7 +628,7 @@ proc addBindParameter*(ps: var PreparedStatement,
   ## see https://oracle.github.io/odpi/doc/user_guide/data_types.html
   ## for supported type combinations of ColumnType.
   ## the parameterindex must be referenced within the
-  ## query with :<paramIndex>.
+  ## query with colon. example :<paramIndex>.
   ## the parameter value can be set with the typed setters on the ParamType.
   ## the type of the parameter is implicit in,out or in/out.
   ## this depends on the underlying query
@@ -649,7 +650,7 @@ proc addArrayBindParameter*(ps: var PreparedStatement,
   ## see https://oracle.github.io/odpi/doc/user_guide/data_types.html
   ## for supported type combinations of ColumnType.
   ## the parametername must be referenced within the
-  ## query with :<paramName>
+  ## query with a colon. example :<paramName>
   ## after adding the parameter value can be set with the typed setters
   ## on the ParamType. the type of the parameter is implicit in,out or in/out.
   ## this depends on the underlying query
@@ -677,7 +678,7 @@ proc addArrayBindParameter*(ps: var PreparedStatement,
   ## see https://oracle.github.io/odpi/doc/user_guide/data_types.html
   ## for supported type combinations of ColumnType.
   ## the parameterindex must be referenced within the
-  ## query with :<paramIndex>.
+  ## query with a colon. example :<paramIndex>.
   ## the parameter value can be set with the typed setters on the ParamType.
   ## the type of the parameter is implicit in,out or in/out.
   ## this depends on the underlying query
@@ -705,7 +706,7 @@ proc addObjectBindParameter*(ps: var PreparedStatement,
   ## array parameters are used for bulk-insert or plsql-array-handling.
   ## throws IOException in case of error.
   ## the parameterindex must be referenced within the
-  ## query with :<paramIndex>.
+  ## query with a colon. example :<paramIndex>.
   ## the parameter value can be set with the typed setters on the ParamType.
   ## the type of the parameter is implicit in,out or in/out.
   ## this depends on the underlying query
@@ -735,7 +736,7 @@ proc addObjectBindParameter*(ps: var PreparedStatement,
   ## array parameters are used for bulk-insert or plsql-array-handling.
   ## throws IOException in case of error.
   ## the parameterindex must be referenced within the
-  ## query with :<paramIndex>.
+  ## query with a colon. example :<paramIndex>.
   ## the parameter value can be set with the typed setters on the ParamType.
   ## the type of the parameter is implicit in,out or in/out.
   ## this depends on the underlying query
@@ -794,7 +795,7 @@ proc destroy*(prepStmt: var PreparedStatement) =
                               
 proc executeAndInitResultSet(prepStmt: var PreparedStatement,
                          dpiMode: uint32 = DpiModeExec.DEFAULTMODE.ord,
-                         isRefCursor: bool ) =
+                         isRefCursor: bool = false ) =
   ## initialises the derived ResultSet
   ## from the given preparedStatement by calling execute on it
   prepStmt.rsMoreRows = true
@@ -988,7 +989,7 @@ template executeStatement*(prepStmt: var PreparedStatement,
   ## the results can be fetched
   ## on a col by col base. once executed the bound columns can be reused
   ##
-  ## multiple dpiMode's can be "or"ed together.
+  ## multiple dpiModeExec values can be "or"ed together.
   ## raises IOError in case of an error
 
   # probe if binds present
@@ -1014,7 +1015,7 @@ template executeBulkUpdate(prepStmt: var PreparedStatement,
     {.effects.}
 
 template fetchNextRows*(rs: var ResultSet) =
-  ## fetches next rows (if present) into the internal buffer.
+  ## fetches next rows (if present) into the internal ODPI-C buffer.
   ## if DpiResult.FAILURE is returned the internal error could be retrieved
   ## by calling getErrstr on the context.
   ##
@@ -1027,7 +1028,7 @@ template fetchNextRows*(rs: var ResultSet) =
   ## remark: no data-copy is performed.
   ## blobs and strings (pointer types) should be copied into the application
   ## domain before calling fetchNextRows again.
-  ## value types are copied on assignment
+  ## value types are always copied on assignment
   if rs.rsMoreRows:
     var moreRows: cint # out
     var bufferRowIndex: uint32 # out
@@ -1126,7 +1127,7 @@ iterator bulkBindIterator*(pstmt: var PreparedStatement,
 
 template withTransaction*(dbconn: OracleConnection,
     body: untyped) =
-  ## used to encapsulate the operation within a transaction.
+  ## used to encapsulate the operation with a transaction.
   ## if an exception is thrown (within the body) the
   ## transaction will be rolled back.
   ## note that a dml operation creates a implicit transaction.
@@ -1179,6 +1180,8 @@ proc lookupObjectType*(conn : var OracleConnection,
   ## database-object-type lookup - needed for variable-object-binding.
   ## the returned OracleObjType is always bound to a specific connection.
   ## the typeName can be prefixed with the schemaname the object resides.
+  ## if the OracleObjType is no longer used the internal resources must be freed
+  ## with "releaseOracleObjType" or utilize the helper template "withOracleObjType" 
   let tname : cstring = $typeName
   result.relatedConn = conn
   if DpiResult(dpiConn_getObjectType(conn.connection,
@@ -1198,9 +1201,9 @@ proc lookupObjectType*(conn : var OracleConnection,
 
   if objinfo.isCollection == 1:
     result.isCollection = true
-    result.elementTypeInfo = objinfo.elementTypeInfo
-    discard dpiObjectType_getInfo(objinfo.elementTypeInfo.objectType,result.childObjectTypeInfo.addr)
-    # get the elements dataTypeInfo  
+    result.elementDataTypeInfo = objinfo.elementTypeInfo
+    discard dpiObjectType_getInfo(objinfo.elementTypeInfo.objectType,result.elementObjectTypeInfo.addr)
+    # get the related child-element dataTypeInfo  
   else: 
     result.isCollection = false
   
@@ -1633,7 +1636,7 @@ proc setElementValue2Backend(collObj : var OracleCollection,
   ## or an internal error occurs
   if DpiResult(dpiObject_setElementValueByIndex(collObj.objHdl,
                                            index.int32,
-                              collObj.objType.elementTypeInfo.defaultNativeTypeNum,
+                              collObj.objType.elementDataTypeInfo.defaultNativeTypeNum,
                               collObj.elementHelper)).isFailure:
     raise newException(IOError, "setElementValueByIndex: " &
       getErrstr(collObj.objType.relatedConn.context.oracleContext))
@@ -1648,7 +1651,7 @@ proc getElementValueFromBackend(collObj : var OracleCollection,
   ## an IOException is thrown if the object is not a collection
   ## or an internal error occurs
   if DpiResult(dpiObject_getElementValueByIndex(collObj.objHdl,index.int32,
-                collObj.objType.elementTypeInfo.defaultNativeTypeNum,
+                collObj.objType.elementDataTypeInfo.defaultNativeTypeNum,
                   collObj.elementHelper)).isFailure:
     raise newException(IOError, "getElementValueByIndex: " &
       getErrstr(collObj.objType.relatedConn.context.oracleContext))
@@ -1676,11 +1679,11 @@ proc getCollectionElement(collObj : var OracleCollection, index : int) : ptr dpi
   ## for native typed collection elements please use the
   ## fetch/set templates.
   if not collObj.objType.
-            elementTypeInfo.defaultNativeTypeNum == 
+            elementDataTypeInfo.defaultNativeTypeNum == 
               DpiNativeCType.OBJECT.ord:
     raise newException(IOError, "getCollectionElement: " &
       "related native type must be OBJECT but was: " & 
-       $collObj.objType.elementTypeInfo )
+       $collObj.objType.elementDataTypeInfo )
     {.effects.}
 
   if collObj.isElementPresent(index):
@@ -2108,12 +2111,12 @@ when isMainModule:
   
   var colltype = conn.lookupObjectType("HR.DEMO_COLL")
   var collection = colltype.newOracleCollection
-  echo $colltype.elementTypeInfo
+  echo $colltype.elementDataTypeInfo
   var objinf : dpiObjectTypeInfo
 
   # FIXME: only schema and name can be recovered. if it's a collection
   # call lookupObjType again
-  discard dpiObjectType_getInfo(colltype.elementTypeInfo.objectType,objinf.addr)
+  discard dpiObjectType_getInfo(colltype.elementDataTypeInfo.objectType,objinf.addr)
   echo fetchObjectTypeName(objinf)
    
   withOracleCollection(collection):
@@ -2133,11 +2136,11 @@ when isMainModule:
       var res : ptr dpiObject 
       # begin testcode
       if not copyOfColl.objType.
-            elementTypeInfo.defaultNativeTypeNum == 
+            elementDataTypeInfo.defaultNativeTypeNum == 
               DpiNativeCType.OBJECT.ord:
                 raise newException(IOError, "getCollectionElement: " &
                   "related native type must be OBJECT but was: " & 
-                  $copyOfColl.objType.elementTypeInfo )
+                  $copyOfColl.objType.elementDataTypeInfo )
     
       if copyOfColl.isElementPresent(0):
         res = copyOfColl.getElementValueFromBackend(0).
