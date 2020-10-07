@@ -76,7 +76,7 @@ import nimodpi
 
 type
   OracleContext* = object
-    ## wrapper for the context and createParams
+    ## stateless wrapper for the context and createParams
     oracleContext: ptr dpiContext
     versionInfo: dpiVersionInfo
     commonParams: dpiCommonCreateParams
@@ -90,17 +90,21 @@ type
     context: OracleContext
 
   BindIdx = distinct range[1.int .. int.high]
-
+  ## bind parameter type 
   BindInfoType = enum byPosition, byName
-
+  ## bind parameter info type
+  
   BindInfo = object
     # tracks the bindType.
     case kind*: BindInfoType
       of byPosition: paramVal*: BindIdx
       of byName: paramName*: string
+  ## bind parameter info type. tracks the bindInfoType
+  ## and contains either the BindIndexValue (paramVal) 
+  ## or the BindParameterName (paramName)
 
   ParamType* = object
-    ## describes how the database type is mapped onto
+    ## ParameterType. describes how the database type is mapped onto
     ## the query
     bindPosition*: BindInfo
     # bind position and type -> rename 2 bindinfo
@@ -156,19 +160,21 @@ const
   Int64ColumnTypeParam* = (DpiNativeCType.INT64,
                            DpiOracleType.OTNUMBER,
                            1, false, 1.int8,"",0.int16,0.uint8).ColumnType
+  ## predefined parameter for the Int64 column type (OTNUMBER)
   FloatColumnTypeParam* = (DpiNativeCType.FLOAT,
                            DpiOracleType.OTNATIVE_FLOAT,
                            1,false,0.int8,"",0.int16,0.uint8).ColumnType
+  ## predefined parameter for the Float column type (OTNATIVE_FLOAT)
   DoubleColumnTypeParam* = ( DpiNativeCType.DOUBLE,
                            DpiOracleType.OTNATIVE_DOUBLE,
                            1,false,0.int8,"",0.int16,0.uint8).ColumnType
+  ## predefined parameter for the Double column type (OTNATIVE_DOUBLE)
   ZonedTimestampTypeParam* = (DpiNativeCType.TIMESTAMP,
                             DpiOracleType.OTTIMESTAMP_TZ,
                             1,false,0.int8,"",0.int16,0.uint8).ColumnType
+  ## predefined parameter for the Timestamp with Timezone type (OTTIMESTAMP_TZ)
   # FIXME: populate scale, precision for fp-types                                                   
 
-  ## predefined Int64 Type                              
-  # TODO: use dpiStmt_executeMany for bulk binds
 type
   SqlQuery* = distinct cstring
     ## fixme: use sqlquery from db_common
@@ -198,9 +204,11 @@ type
     rsRowsFetched*: int # stats counter
     rsColumnNames*: seq[string] 
     # populated on the first executeStatement
+  ## PreparedStatement is used for both read and write operations
+  ## (working with queries and object types).  
 
   ResultSet* = PreparedStatement
-  # type alias
+  ## PreparedStatement type alias
 
   DpiRow* = object
     rset : ptr ResultSet 
@@ -243,7 +251,8 @@ type
     ## typically used for write operations (client->database).
     objType : ref OracleObjType
     objHdl : ptr dpiObject
-    # the odpi-c object handle
+    # the odpi-c object handle. this ref needs to be freed if no
+    # longer in use
     paramVar : ptr dpiVar
     dataHelper : ptr dpiData
     # helper used for adding to collection
@@ -308,7 +317,8 @@ template `[]`*(row: DpiRow, index : int ): ptr dpiData =
   ## access of the iterators dataCell by index (starts with 0)
   row.rawRow[index]  
 
-template toObject*( val : ptr dpiData) : ptr dpiObject =
+template toObject*( val : ptr dpiData) : ptr dpiData =
+  ## FIXME: eval if needed
   val.value.asObject
 
 template `[]`(data: ptr dpiData, idx: int): ptr dpiData =
@@ -1059,12 +1069,12 @@ iterator resultParamTypeIterator*(rs : var ResultSet) : tuple[idx : int, pt : Pa
  
 iterator resultSetRowIterator*(rs: var ResultSet): DpiRow =
   ## iterates over the resultset row by row. no data copy is performed
-  ## and the ptr type values should be copied into the application
+  ## and ptr type values should be copied into the application
   ## domain before the next window is requested.
   ## do not use this iterator in conjunction with fetchNextRows because
   ## it's already used internally.
   ## in an error case an IOException is thrown with the error message retrieved
-  ## out of the context.
+  ## out of the OracleContext.
   var p: DpiRow = DpiRow(rawRow : newSeq[ptr dpiData](rs.rsOutputCols.len), 
                          rSet : rs.addr)
   rs.rsCurrRow = 0
@@ -1377,7 +1387,10 @@ proc getAttributeValue( obj : var OracleObj, idx : int ) : ptr dpiData =
   ## out of the odpic-domain
   let ctype = obj.objType.columnTypeList[idx]
   let attr = obj.objType.attributes[idx]
-  
+  #FIXME: implement: If the native type is DPI_NATIVE_TYPE_BYTES and the Oracle type of the attribute
+  # is DPI_ORACLE_TYPE_NUMBER, a buffer must be supplied in the value.asBytes.ptr attribute 
+  # and the maximum length of that buffer must be supplied in the value.asBytes.length attribute 
+  # before calling this function. 
   if DpiResult(dpiObject_getAttributeValue(
                 obj.objHdl,
                 attr,
@@ -1801,7 +1814,7 @@ when isMainModule:
     echo "cname:" & rs.rsColumnNames[i] & " colnumidx: " & 
       $(i+1) & " " & $ct
 
-  for row in resultSetRowIterator(rs):
+  for row in rs.resultSetRowIterator:
     # the result iterator fetches internally further
     # rows if present 
     # example of value retrieval by columnname or index
@@ -1820,7 +1833,7 @@ when isMainModule:
   # the parameter is changed here and the query is 
   # re-executed 
 
-  for row in resultSetRowIterator(rs):
+  for row in rs.resultSetRowIterator:
     # retrieve column values by columnname or index
     echo $row[0].fetchRowId &
       " " & $row[1].fetchDouble &
@@ -1846,6 +1859,7 @@ when isMainModule:
                    from hr.employees 
                     where department_id = :3;
       end; """
+  # implicit results example (ref cursor)
   # FIXME: typed plsql blocks
 
   var pstmt2 : PreparedStatement
@@ -1856,12 +1870,13 @@ when isMainModule:
 
   withPreparedStatement(pstmt2):
     discard ps.addBindParameter(RefCursorColumnTypeParam,BindIdx(1))
-    # to consume the refcursor a bindParameter is needed                                   
+    # to consume the refcursor a bindParameter is needed (bind by index)                                   
     discard ps.addBindParameter(RefCursorColumnTypeParam,"refc2")
-    # example of bind by name
+    # example of bind by name (alternative to bind by index)
     discard ps.addBindParameter(Int64ColumnTypeParam,BindIdx(3))
     # filter: parameter for department_id                                   
     ps[3.BindIdx].setInt64(some(80.int64))
+    # sets the value of the bind parameter
 
     ps.executeStatement(rs)
 
@@ -1871,7 +1886,7 @@ when isMainModule:
     ps.openRefCursor(1.BindIdx, refc, 1, DpiModeExec.DEFAULTMODE.ord)
     # opens the refcursor. once consumed it can't be reopended (TODO: check
     # if that's a ODPI-C limitation)
-    for row in resultSetRowIterator(refc):
+    for row in refc.resultSetRowIterator:
       echo $row[0].fetchString
 
     echo "refCursor 2 results: filter with department_id = 80 "
@@ -1879,7 +1894,7 @@ when isMainModule:
     var refc2 : ResultSet
     ps.openRefCursor("refc2", refc2, 10, DpiModeExec.DEFAULTMODE.ord)
 
-    for row in resultSetRowIterator(refc2):
+    for row in refc2.resultSetRowIterator:
       echo $row[0].fetchString & " " & $row[1].fetchString
 
 
@@ -1939,7 +1954,8 @@ when isMainModule:
   # you will receive an exception here
 
   var rset: ResultSet
-
+  # TODO: checkout new prefetch size feature
+  # https://cx-oracle.readthedocs.io/en/latest/user_guide/tuning.html#choosing-values-for-arraysize-and-prefetchrows 
   pstmt3.withPreparedStatement:
     conn.withTransaction: # commit after this block
       # cleanup of preparedStatement beyond this block
@@ -1984,7 +2000,7 @@ when isMainModule:
 
   withPreparedStatement(pstmt4): 
     ps.executeStatement(rset4)
-    for row in resultSetRowIterator(rset4):       
+    for row in rset4.resultSetRowIterator:       
       echo $row[0].fetchString & "  " & $row[1].fetchInt64 & 
             " " & $row[2].fetchString & 
           # " "  & $fetchFloat(row[3].data) &
@@ -2126,6 +2142,7 @@ when isMainModule:
     echo " size of collection: " & $collection.fetchCollectionSize
 
     var copyOfColl = collection.copyOracleColl
+    # copies the entire collection
     withOracleCollection(copyOfColl):
       echo " size of copied collection: " &  
         $copyOfColl.fetchCollectionSize
@@ -2148,8 +2165,6 @@ when isMainModule:
       else:
         copyOfColl.elementHelper.setDbNull
         res = cast[ptr dpiObject](copyOfColl.elementHelper)
-
-
 
       # end testcode
 
@@ -2237,10 +2252,10 @@ when isMainModule:
 
         echo "executed"
         # eval the result columns:
-        for i,pt in resultParamTypeIterator(nSelectRset):
+        for i,pt in nSelectRset.resultParamTypeIterator:
           echo "column: " & $i & " type: " & $pt
         
-        for row in resultSetRowIterator(nSelectRset):       
+        for row in nSelectRset.resultSetRowIterator:       
              echo $row[0].fetchString
              # FIXME: readout object 
              
@@ -2270,6 +2285,8 @@ when isMainModule:
 
       #  for row in resultSetRowIterator(callFuncResultAggr2):       
       #    echo $row[0].fetchString
+
+      #FIXME: edition based redefinition example
            
       # drop tab with nested table
       var dropNDEMOTab = osql"drop table HR.NDEMO "
