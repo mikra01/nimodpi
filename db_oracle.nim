@@ -249,7 +249,7 @@ type
     ## related to a specific type handle. this kind of
     ## object need to be disposed if no longer needed.
     ## typically used for write operations (client->database).
-    objType : ref OracleObjType
+    objType : OracleObjType
     objHdl : ptr dpiObject
     # the odpi-c object handle. this ref needs to be freed if no
     # longer in use
@@ -267,6 +267,7 @@ type
     ## longer needed.
     elementHelper : ptr dpiData
     # one dpiData chunk 
+    childObjectType : OracleObjType
 
 type
   Lob* = object
@@ -1255,7 +1256,7 @@ proc lookupObjectType*(conn : var OracleConnection,
 
   return result                              
  
-proc releaseOracleObjType*( objType : OracleObjType ) = 
+proc releaseOracleObjType*( objType : var OracleObjType ) = 
   ## releases the object type obtained by lookupObjectType.
   ## the internal memory is released first.
   dealloc(objType.tmpAttrData)
@@ -1322,12 +1323,13 @@ proc newOracleObject*( objType : var OracleObjType ) : OracleObj =
      raise newException(IOError, "newOracleObject: " &
        getErrstr(objType.relatedConn.context.oracleContext))
      {.effects.}
-  result.objType = cast[ref OracleObjType](objType.addr)
+  result.objType = objType
   
   # setup buffered columns
   result.setupObjBufferedColumn
 
-proc newOracleCollection*(collectionType : var OracleObjType) : OracleCollection =
+proc newOracleCollection*(collectionType : var OracleObjType, 
+                                elemType : var OracleObjType) : OracleCollection =
   ## create a new oracle collection object out of the OracleObjType which can be used
   ## for binding(todo:eval) or reading/fetching from the database.
   ## ODPI-C and internal resources are hold till releaseOracleCollection is called
@@ -1343,7 +1345,8 @@ proc newOracleCollection*(collectionType : var OracleObjType) : OracleCollection
         getErrstr(collectionType.relatedConn.context.oracleContext))
     {.effects.}
   #FIXME: retrieve now the childtype of this collection XXX  
-  result.objType =  cast[ref OracleObjType](collectionType.addr)
+  result.objType =  collectionType
+  result.childObjectType = elemType
   result.setupObjBufferedColumn
   result.elementHelper = cast[ptr dpiData](alloc0( sizeof(dpiData) ))
   # needed for reading/writing collection members
@@ -1662,13 +1665,22 @@ proc getElementValueFromBackend(collObj : var OracleCollection,
   ## setter is not provided. can be used both for DpiNativeCType.OBJECT
   ## or native types (the value from member dpiDataTypeInfo.defaultNativeTypeNum is used)
   ## an IOException is thrown if the object is not a collection
-  ## or an internal error occurs
+  ## or an internal error occurs.
+  ## FIXME: implement external buffer for 
+  ## DPI_NATIVE_TYPE_BYTES and the Oracle type of the attribute is DPI_ORACLE_TYPE_NUMBER
+  ## 
+  ## https://oracle.github.io/odpi/doc/functions/dpiObject.html
   if DpiResult(dpiObject_getElementValueByIndex(collObj.objHdl,index.int32,
-                collObj.objType.elementDataTypeInfo.defaultNativeTypeNum,
+               collObj.childObjectType.elementDataTypeInfo.defaultNativeTypeNum,
                   collObj.elementHelper)).isFailure:
     raise newException(IOError, "getElementValueByIndex: " &
       getErrstr(collObj.objType.relatedConn.context.oracleContext))
     {.effects.}    
+     # child objtype so ermitteln!
+     # DpiNativeCType.Object.ord
+    ## xxx hier weitermachen. wir muessen ein object zurueckliefern
+    ## FIXME: dpiObject_release called?
+    ## collObj.objType.elementDataTypeInfo.defaultNativeTypeNum
   return collObj.elementHelper
 
 proc getElementValue( srcObj : ptr dpiData, srcType : OracleObjType, idx : int) : ptr dpiObject =
@@ -1818,7 +1830,7 @@ when isMainModule:
     # the result iterator fetches internally further
     # rows if present 
     # example of value retrieval by columnname or index
-
+    # the column of the row is accessed by colnum or name
     echo $row[0].fetchRowId &
     " " & $row[1].fetchDouble &
     " " & $row["FIRST_NAME"].fetchString &
@@ -2126,7 +2138,7 @@ when isMainModule:
   echo "lookup column-type"
   
   var colltype = conn.lookupObjectType("HR.DEMO_COLL")
-  var collection = colltype.newOracleCollection
+  var collection = colltype.newOracleCollection(objtype)
   echo $colltype.elementDataTypeInfo
   var objinf : dpiObjectTypeInfo
 
@@ -2134,7 +2146,8 @@ when isMainModule:
   # call lookupObjType again
   discard dpiObjectType_getInfo(colltype.elementDataTypeInfo.objectType,objinf.addr)
   echo fetchObjectTypeName(objinf)
-   
+  var childElemType = conn.lookupObjectType(fetchObjectTypeName(objinf)) 
+
   withOracleCollection(collection):
     collection.appendElement(copyof)
     collection.appendElement(obj)

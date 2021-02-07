@@ -31,7 +31,8 @@ static:
 include/*.h
 embed/*.c
 src/*
-""", checkout = "tags/v4.0.2")
+""", checkout = "master" )
+  # "tags/v4.0.2"
   # if a specific version is desired, pull the odpi version manually into the 
   # subdirectory /build/
 
