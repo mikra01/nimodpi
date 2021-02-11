@@ -83,6 +83,10 @@ template `$`*(p: ref OracleObjType ): string =
     " numAttributes " & $p.objectTypeInfo.numAttributes &
     $p.objectTypeInfo.elementTypeInfo 
 
+template `$`*(p:  OracleObjRef ): string =
+    ## string representation OracleObjType
+    " obj of type: " & $p.objType 
+ 
 template `$`*(p: ParamTypeRef): string =
   $p.bindPosition & " " & $p.columnType & " rowbuffersize: " & $p.rowbuffersize
 

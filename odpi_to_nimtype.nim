@@ -1,5 +1,5 @@
 # dpi2nimtype conversion helper
-
+# pointer types (strings) are copied into nim domain
 template  toDateTime(p: ptr dpiData): DateTime =
   ## dpiTimestamp to DateTime
   let dpits = p.value.asTimestamp
@@ -13,16 +13,14 @@ template  toDateTime(p: ptr dpiData): DateTime =
 
 template toNimString(data: ptr dpiData): string =
   ## copy template into nim domain
-  let d = data.value.asBytes
-  var result: string = newString(d.length)
-  copyMem(addr(result[0]), d.ptr, result.len)
+  var result = newString(data.value.asBytes.length)
+  copyMem(addr(result[0]), data.value.asBytes.ptr, result.len)
   result
 
 template toNimByteSeq(data: ptr dpiData): seq[byte] =
   ## copy template for binary data into nim domain
-  let d = data.value.asBytes
-  var result: seq[byte] = newSeq[byte](d.length)
-  copyMem(addr(result[0]), d.ptr, result.len)
+  var result = newSeq[byte](data.value.asBytes.length)
+  copyMem(addr(result[0]), data.value.asBytes.ptr, result.len)
   result
 
 template toIntervalDs(data : ptr dpiData) : Duration =
