@@ -14,6 +14,7 @@ template `[]`(obj: OracleObjRef, colidx: int): ptr dpiData =
   obj.bufferedColumn[colidx]
   # FIXME: eval if buffering needed 
 
+
 template fetchBoolean*(val : ptr dpiData) : Option[bool] =
     ## fetches the specified value as boolean. the value is copied
     if val.isDbNull:
@@ -50,7 +51,9 @@ template setBoolean*( param : OracleObjRef ,
                       value : Option[bool]) =
   ## access template for db-types
   param[index].setBoolean(value)
+    # set buffered column
   setAttributeValue(param,index)
+    # set backend. FIXME: remove quirk
 
 template setBoolean*( param : OracleObjRef , 
                       attrName : string,  
@@ -99,7 +102,7 @@ template setFloat*( param : OracleObjRef ,
 template setFloat*( param : OracleObjRef , 
                     attrName : string,  
                     value : Option[float32]) =
-  setFloat(param,lookUpAttrIndexByName(param,attrName),value)
+  setFloat(param,lookUpAttrIndexByName(attrName),value)
 
 template fetchDouble*(val : ptr dpiData) : Option[float64] =
     ## fetches the specified value as double (Nims 64 bit type). the value is copied 
@@ -117,7 +120,7 @@ template fetchDouble*( param : OracleObjRef , index : int) : Option[float64] =
 
 template fetchDouble*( param : OracleObjRef , attrName : string) : Option[float64] =
   ## access template for db-types
-  getAttributeValue(param,lookUpAttrIndexByName(attrName)).fetchDouble
+  getAttributeValue(param,lookUpAttrIndexByName(param,attrName)).fetchDouble
 
 proc setDouble(param : ptr dpiData, value : Option[float64]) =
     ## bind parameter setter float64 type. 

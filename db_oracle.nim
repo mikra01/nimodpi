@@ -100,6 +100,47 @@ type
   ## and contains either the BindIndexValue (paramVal) 
   ## or the BindParameterName (paramName)
 
+  ColumnType* = tuple[nativeType: DpiNativeCType,
+                      dbType: DpiOracleType,
+                      colsize: int,
+                      sizeIsBytes: bool,
+                      scale: int8,
+                      name : string,
+                      precision : int16,
+                      fsPrecision : uint8 ] # scale used for some numeric types
+  # FIXME: refactor to object and/or recycle driver type directly
+  ColumnTypeList* = seq[ColumnType]
+
+  OracleObjTypeRef* = ref object 
+    ## thin wrapper for the object type database handle.
+    ## these type of objects need to be disposed if no longer needed.
+    ## used for read or write operations for both types and collections.
+    relatedConn : OracleConnection
+    baseHdl : ptr dpiObjectType
+    objectTypeInfo : dpiObjectTypeInfo
+    isCollection : bool
+    elementDataTypeInfo : ptr dpiDataTypeInfo
+    elementObjectTypeInfo : ptr dpiObjectTypeInfo
+    # the type of the collections member
+    # elementDataTypeInfo and elementObjectTypeInfo only valid
+    # for collection types
+    childObjectType : OracleObjTypeRef
+    # only set if the objectType is a collection
+    attributes : seq[ptr dpiObjectAttr]
+    # only populated if the type is not a collection
+    columnTypeList : ColumnTypeList
+    # columnTypeList and attributes are in the
+    # same order (for non collection types)
+    namedColumnTypes : TableRef[string,OracleObjTypeRef]
+    # in case of a object column type the column name refers
+    # to the introspected objectType 
+    tmpAttrData : ptr dpiData
+    # allocated area for fetching/setting attributes
+    # by dpiObject handle 
+    # FIXME: remove - bind data handles related to the 
+    # object and not the object type
+
+
   ParamType* = object
     ## ParameterType. describes how the database type is mapped onto
     ## the query
@@ -111,15 +152,18 @@ type
     # tracks the native- and dbtype
     objectTypeHandle : ptr dpiObjectType
     # object type handle for plsql types
+    # used for in/out/inout parameter bind values
     # freed automatically beecause owner is dpiQueryInfo
     rObjTypeInfo : ptr dpiObjectTypeInfo
     # result object type info - only populated 
     # for result parameters at the moment
     rAttributeHdl : seq[ptr dpiObjectAttr]
     # result attribute handle
-    # needed for reading/writing attributes
-    # handles to the attributes
+    # needed for reading/writing object attributes
+    rObjectTypeRef : OracleObjTypeRef
+    # new objecttype handle for reading/writing objects
     rAttributeInfo : seq[dpiObjectAttrInfo]
+    # unused
     paramVar: ptr dpiVar
     # ODPI-C ptr to the variable def
     buffer: ptr dpiData
@@ -135,18 +179,6 @@ type
     ## handle to the param type
 
   ParamTypeList* = seq[ParamTypeRef]
-
-  ColumnType* = tuple[nativeType: DpiNativeCType,
-                      dbType: DpiOracleType,
-                      colsize: int,
-                      sizeIsBytes: bool,
-                      scale: int8,
-                      name : string,
-                      precision : int16,
-                      fsPrecision : uint8 ] # scale used for some numeric types
-  # FIXME: refactor to object and/or recycle driver type directly
-  ColumnTypeList* = seq[ColumnType]
-  # predefined column types
 
 const
   NlsLangDefault = "UTF8".NlsLang
@@ -216,31 +248,6 @@ type
     ## type can be retrieved. at the moment the caller needs to
     ## specify the object-type to fetch the object-members.
 
-  OracleObjTypeRef* = ref object
-    ## thin wrapper for the object type database handle.
-    ## these type of objects need to be disposed if no longer needed.
-    ## used for read or write operations for both types and collections.
-    relatedConn : OracleConnection
-    baseHdl : ptr dpiObjectType
-    objectTypeInfo : dpiObjectTypeInfo
-    isCollection : bool
-    elementDataTypeInfo : ptr dpiDataTypeInfo
-    elementObjectTypeInfo : ptr dpiObjectTypeInfo
-    # the type of the collections member
-    # elementDataTypeInfo and elementObjectTypeInfo only valid
-    # for collection types
-    childObjectType : OracleObjTypeRef
-
-    attributes : seq[ptr dpiObjectAttr]
-    # only populated if the type is not a collection
-    columnTypeList : ColumnTypeList
-    # columnTypeList and attributes are in the
-    # same order (for non collection types)
-    tmpAttrData : ptr dpiData
-    # allocated area for fetching/setting attributes
-    # by dpiObject handle 
-    # FIXME: remove - bind data handles related to the 
-    # object and not the object type
 
   OracleObjRef* = ref object of RootObj
     ## thin wrapper for an object instance
@@ -258,7 +265,7 @@ type
     # the attributes of the object. only
     # initialized if object owns attributes
     # FIXME: evaluate if needed
-    bufferedByteTypeBase : ptr byte
+    bufferedBytesTypeBase : ptr byte
    
   OracleCollectionRef* = ref object of OracleObjRef
     ## thin wrapper for a collection type element.
@@ -565,6 +572,25 @@ template newPreparedStatement*(conn: var OracleConnection,
   newPreparedStatement(conn, query, outPs, 1, stmtCacheKey)
 
 
+template setClientLibPrefetchRows*(ps : var PreparedStatement, numRows : uint32) =
+  ## overrides the clients lib DPI_DEFAULT_PREFETCH_ROWS default. setting it to 0
+  ## will completely disable prefetching
+  if DpiResult(dpiStmt_setPrefetchRows(ps.pstmt,numRows)).isFailure:
+    raise newException(IOError, "setClientLibPrefetchRows: " &
+    " error while setting number of prefetched rows : " & getErrstr(
+        ps.relatedConn.context.oracleContext))
+    {.effects.}
+  
+template getClientLibPrefetchRows*(ps : var PreparedStatement) : uint32 =
+  ## gets the number of rows the client lib is prefetching. 
+  var numrows : uint32 = 0
+  if DpiResult(dpiStmt_getPrefetchRows(ps.pstmt,numrows.addr)).isFailure:
+    raise newException(IOError, "getClientLibPrefetchRows: " &
+    " error while getting number of prefetched rows : " & getErrstr(
+        ps.relatedConn.context.oracleContext))
+    {.effects.}
+  numrows
+
 template releaseParameter(ps : var PreparedStatement, param : ParamTypeRef) =
   ## frees the internal dpiVar resources
   if DpiResult(dpiVar_release(param.paramVar)).isFailure:
@@ -766,7 +792,33 @@ proc addObjectBindParameter*(ps: var PreparedStatement,
   newVar(ps, result)
   ps.boundParams.add(result)
 
+
+proc releaseOracleObjType*( objType :  OracleObjTypeRef ) = 
+  ## releases the object type obtained by lookupObjectType.
+  ## the internal memory is released first.
+  dealloc(objType.tmpAttrData)
+
+  if objType.isCollection:
+    objType.childObjectType.releaseOracleObjType
+
+  for i in objType.attributes.low .. objType.attributes.high:
+    if DpiResult(dpiObjectAttr_release(objType.attributes[i])).isFailure:
+      raise newException(IOError, "releaseOracleObjType: " &
+                            getErrstr(objType.relatedConn.context.oracleContext))
+      {.effects.}
+ 
+  # release base handle
+  if DpiResult(dpiObjectType_release(objType.baseHdl)).isFailure:
+    raise newException(IOError, "releaseOracleObjType: " &
+                            getErrstr(objType.relatedConn.context.oracleContext))
+    {.effects.}
+
+
 template destroy(rsVar : ParamTypeRef , prepStmt : var PreparedStatement) =
+  
+  # release objectParamType handles if present
+  if not rsVar.rObjectTypeRef.isNil:
+    rsVar.rObjectTypeRef.releaseOracleObjType
   ## internal release of the paramtype refs
   ## odpic handles
   if rsVar.rAttributeHdl.len > 0:
@@ -885,8 +937,34 @@ proc executeAndInitResultSet(prepStmt: var PreparedStatement,
                           # each out-resultset param owns the rowbuffersize
                           # of the prepared statement
       # TODO: if the objectType is not nil, query the number of attributes
+      # dpiObjType->getInfo->dpiObjectTypeInfo ->elementTypeInfo->dpiDataTypeInfo->dpiObjType
       # and the object-type
       if not prepStmt.rsOutputCols[i-1].objectTypeHandle.isNil:
+        echo "---------- object_type_handle detected ptr dpiObjectType------------"
+        var objinf : dpiObjectTypeInfo
+        discard dpiObjectType_getInfo(prepStmt.rsOutputCols[i-1].objectTypeHandle,objinf.addr)
+        echo "object_name: " & fetchObjectTypeName(objinf)
+        echo "num_attributes " & $objinf.numAttributes
+        echo "is_collection " & $objinf.isCollection
+        if objinf.isCollection == 1:
+          var di : dpiDataTypeInfo = objinf.elementTypeInfo
+          echo $di.defaultNativeTypeNum
+          if di.defaultNativeTypeNum == DpiNativeCType.OBJECT.ord:
+            echo "collection contains objects"
+            var objtype: ptr dpiObjectType = di.objectType
+            var objtypeInfo : dpiObjectTypeInfo
+            discard dpiObjectType_getInfo(objtype,objtypeInfo.addr)
+            var numattr = objtypeInfo.numAttributes 
+            var objname = fetchObjectTypeName(objtypeInfo)
+            echo objname & " numattributes: " & $numattr
+            # FIXME: function to fetch the object-type with the info references
+            # dpiObjectType_getAttributes(dpiObjectType *objType, uint16_t numAttributes, dpiObjectAttr **attributes)¶
+            #eval object type and attributes    
+            # dpiObjectType *dpiDataTypeInfo.objectType      
+            # discard dpiObjectType_getAttributes(result.elementDataTypeInfo.objectType,)
+            # xxx
+        else:
+          echo "column_type is object"
         discard # TODO
         # get number of attributes with:
         # dpiObjectType_getInfo(dpiObjectType *objType, dpiObjectTypeInfo *info)
@@ -894,6 +972,8 @@ proc executeAndInitResultSet(prepStmt: var PreparedStatement,
         # int dpiObjectType_getAttributes(dpiObjectType 
         # *objType, uint16_t numAttributes, dpiObjectAttr **attributes)
         # TODO: testcase with container type in result
+      
+        # ptr dpiObjectAttr 
       else:
         prepStmt.rsOutputCols[i-1].rAttributeHdl = @[]
 
@@ -963,11 +1043,13 @@ template resetParamRows(ps : var PreparedStatement) =
 
 
 template updateBindParams(prepStmt: var PreparedStatement) =
-  # reread the params for reexecution of the prepared statement
+  ## reset the params for reexecution of the prepared statement
+  ## (rowBufferSize and bindPosition)
   for i in prepStmt.boundParams.low .. prepStmt.boundParams.high:
     let bp = prepStmt.boundParams[i]
   
     if bp.rowBufferSize > 1:
+      # set the num of elements according to the rowBufferSize
       if DpiResult(dpiVar_setNumElementsInArray(bp.paramVar,
                                            bp.rowBufferSize.uint32)).isFailure:
         raise newException(IOError, "updateBindParams: " & $bp  & " " &
@@ -999,11 +1081,12 @@ template updateBindParams(prepStmt: var PreparedStatement) =
 template executeStatement*(prepStmt: var PreparedStatement,
                         outRs: var ResultSet,
                         dpiMode: uint32 = DpiModeExec.DEFAULTMODE.ord) =
+  ## executes the PreparedStatement.
   ## the results can be fetched
   ## on a col by col base. once executed the bound columns can be reused
   ##
   ## multiple dpiModeExec values can be "or"ed together.
-  ## raises IOError in case of an error
+  ## raises IOError in case of a backend-error
 
   # probe if binds present
   if prepStmt.boundParams.len > 0:
@@ -1016,7 +1099,7 @@ template executeBulkUpdate(prepStmt: var PreparedStatement,
                         numRows: int,
                         dpiMode: uint32 = DpiModeExec.DEFAULTMODE.ord) =
   ## executes the statement without returning any rows.
-  ## suitable for bulk insert
+  ## suitable for bulk insert/update
   if prepStmt.boundParams.len > 0:
     updateBindParams(prepStmt)
 
@@ -1030,10 +1113,11 @@ template executeBulkUpdate(prepStmt: var PreparedStatement,
 template fetchNextRows*(rs: var ResultSet) =
   ## fetches next rows (if present) into the internal ODPI-C buffer.
   ## if DpiResult.FAILURE is returned the internal error could be retrieved
-  ## by calling getErrstr on the context.
+  ## by calling getErrstr on the OracleContext.
   ##
-  ## After fetching, the window can be accessed by using the
-  ## "[<colidx>][<rowidx>]" operator on the resultSet.
+  ## After fetching, the buffer-window can be accessed by using the
+  ## "[<colidx>][<rowidx>]" operator on the resultSet for native values.
+  ## For typed objects please use [<colidx>].setObject or [<colidx>].getObject.
   ## No bounds check is performed.
   ## the colidx should not exceed the maximum column-count and the
   ## rowidx should not exceed the given fetchArraySize
@@ -1041,7 +1125,9 @@ template fetchNextRows*(rs: var ResultSet) =
   ## remark: no data-copy is performed.
   ## blobs and strings (pointer types) should be copied into the application
   ## domain before calling fetchNextRows again.
-  ## value types are always copied on assignment
+  ## value types are always copied on assignment.
+  ## use this template only if you need a "fine granuled" access over the ResultSet -
+  ## for all other cases use the iterator resultSetRowIterator instead.
   if rs.rsMoreRows:
     var moreRows: cint # out
     var bufferRowIndex: uint32 # out
@@ -1059,7 +1145,18 @@ template fetchNextRows*(rs: var ResultSet) =
       raise newException(IOError, "fetchNextRows: " &
         getErrstr(rs.relatedConn.context.oracleContext))
       {.effects.}
-  
+
+iterator objectAttributeTypeIterator*(objType : OracleObjTypeRef) : tuple[idx : int, 
+                                                                ct : ColumnType, 
+                                                                hdl : ptr dpiObjectAttr] =
+  ## iterates over the non-collection objects attributes. raises IOError if the
+  ## named type is a collection
+  if objType.isCollection:
+    raise newException(IOError,"objectType is a collection. only non-collection types are iterable")                                                                 
+  for i in countup(objType.columnTypeList.low,objType.columnTypeList.high):
+    yield (i,objType.columnTypeList[i],objType.attributes[i])
+
+
 iterator resultColumnTypeIterator*(rs : var ResultSet) : tuple[idx : int, ct: ColumnType] = 
   ## iterates over the resultSets columnTypes if present
   for i in countup(rs.rsOutputCols.low,rs.rsOutputCols.high):
@@ -1073,7 +1170,7 @@ iterator resultParamTypeIterator*(rs : var ResultSet) : tuple[idx : int, pt : Pa
 iterator resultSetRowIterator*(rs: var ResultSet): DpiRow =
   ## iterates over the resultset row by row. no data copy is performed
   ## and ptr type values should be copied into the application
-  ## domain before the next window is requested.
+  ## domain before the next window is requested (blob/strings i.e.)
   ## do not use this iterator in conjunction with fetchNextRows because
   ## it's already used internally.
   ## in an error case an IOException is thrown with the error message retrieved
@@ -1186,79 +1283,42 @@ proc executeDDL*(conn: var OracleConnection,
         " statement is no DDL. please use executeStatement instead.")
       {.effects.}
 
+proc introspectObjectType( base: OracleObjTypeRef , attr : ptr dpiObjectAttr ) : OracleObjTypeRef =
+  ## introspects the attribute - raises exception if the attribute is not type: OBJECT
+  ## or the object's column was already introspected
+  discard
 
-proc lookupObjectType*(conn : var OracleConnection,
-                       typeName : string) : OracleObjTypeRef = 
-  ## database-object-type lookup - needed for variable-object-binding.
-  ## the returned OracleObjTypeRef is always bound to a specific connection.
-  ## the typeName can be prefixed with the schemaname the object resides.
-  ## if the OracleObjTypeRef is no longer used the internal resources must be freed
-  ## with "releaseOracleObjType" or utilize the helper template "withOracleObjType" 
-  let tname : cstring = $typeName
-  result = OracleObjTypeRef()
-  result.relatedConn = conn
+{.experimental: "codeReordering".}
 
-  if DpiResult(dpiConn_getObjectType(conn.connection,
-                                     tname,
-                                     tname.len.uint32,
-                                     result.baseHdl.addr)).isFailure:
-    raise newException(IOError, "lookupObjectType: " &
-      getErrstr(conn.context.oracleContext))
-    {.effects.}
-
-  if DpiResult(dpiObjectType_getInfo(result.baseHdl,
-                                     result.objectTypeInfo.addr)).isFailure:
-    raise newException(IOError, "lookupInfoType: " &
-                              getErrstr(conn.context.oracleContext))
-    {.effects.}
-
-  if result.objectTypeInfo.isCollection == 1:
-    result.isCollection = true
-    result.elementDataTypeInfo = result.objectTypeInfo.elementTypeInfo.addr
-    discard dpiObjectType_getInfo(result.elementDataTypeInfo.objectType,result.elementObjectTypeInfo)
-    # introspect element type of the container 
-
-    var objinf : dpiObjectTypeInfo
-    discard dpiObjectType_getInfo(result.elementDataTypeInfo.objectType,objinf.addr)
-    var childobjname = fetchObjectTypeName(objinf)
-    result.childObjectType = result.relatedConn.lookupObjectType(childobjname) 
-    # auto introspect the child type. at the moment nested collections not supported 
+template initAttributes(objType : OracleObjTypeRef ) = 
+  ## introspects and initializes the object types attributes if present
   
-    if result.childObjectType.isCollection:
-      raise newException(IOError,"nested collections not supported")
-
-  else: 
-    result.isCollection = false
-  
-  result.columnTypeList = newSeq[ColumnType](result.objectTypeInfo.numAttributes)
-
-  result.tmpAttrData = cast[ptr dpiData](alloc0(sizeof(dpiData)))
-  # alloc mem for raw fetching attribute values
+  objType.columnTypeList = newSeq[ColumnType](objType.objectTypeInfo.numAttributes)
+  objType.namedColumnTypes = newTable[string,OracleObjTypeRef]()
 
   # setup attribute list
-
   # todo: check if attributes present
-  if result.objectTypeInfo.numAttributes > 0.uint16:
-    result.attributes = 
-      newSeq[ptr dpiObjectAttr](result.objectTypeInfo.numAttributes)
+  if objType.objectTypeInfo.numAttributes > 0.uint16:
+    objType.attributes = 
+      newSeq[ptr dpiObjectAttr](objType.objectTypeInfo.numAttributes)
 
-    if DpiResult(dpiObjectType_getAttributes(
-                                           result.baseHdl,
-                                           result.objectTypeInfo.numAttributes,
-                                           result.attributes[0].addr
-    )).isFailure:
+    if DpiResult(dpiObjectType_getAttributes(objType.baseHdl,
+                                             objType.objectTypeInfo.numAttributes,
+                                             objType.attributes[0].addr
+      )).isFailure:
       raise newException(IOError, "lookupAttributes: " &
-                              getErrstr(conn.context.oracleContext))
+                              getErrstr(objType.relatedConn.context.oracleContext))
       {.effects.}
+
 
     var attrInfo : dpiObjectAttrInfo
 
-    for i in result.columnTypeList.low .. result.columnTypeList.high:
-      discard dpiObjectAttr_getInfo(result.attributes[i],attrInfo.addr)
+    for i in objType.columnTypeList.low .. objType.columnTypeList.high:
+      discard dpiObjectAttr_getInfo(objType.attributes[i],attrInfo.addr)
       var attrName : string =  newString(attrInfo.nameLength)
       copyMem(addr(attrName[0]),attrInfo.name,attrInfo.nameLength) 
    
-      result.columnTypeList[i] = (DpiNativeCType(attrInfo.typeInfo.defaultNativeTypeNum),
+      objType.columnTypeList[i] = (DpiNativeCType(attrInfo.typeInfo.defaultNativeTypeNum),
                                              DpiOracleType(attrInfo.typeInfo.oracleTypeNum),
                                              attrInfo.typeInfo.clientSizeInBytes.int,
                                              true,
@@ -1267,27 +1327,70 @@ proc lookupObjectType*(conn : var OracleConnection,
                                              attrInfo.typeInfo.precision,
                                              attrInfo.typeInfo.fsPrecision
                                              )
+
+
+proc initObjectTypeHdl(objType : OracleObjTypeRef,  hdl : ptr dpiObjectType ) =
+  ## init the OracleObjTypeRef out of it's ODPI-C object-type.
+  ## if the type is a collection it's childObjectType is also introspected
+  objType.baseHdl = hdl  
+
+  if DpiResult(dpiObjectType_getInfo(objType.baseHdl,
+                                     objType.objectTypeInfo.addr)).isFailure:
+    raise newException(IOError, "lookupInfoType: " &
+                              getErrstr(objType.relatedConn.context.oracleContext))
+    {.effects.}
+
+  if objType.objectTypeInfo.isCollection == 1:
+    objType.isCollection = true
+    objType.elementDataTypeInfo = objType.objectTypeInfo.elementTypeInfo.addr
+    discard dpiObjectType_getInfo(objType.elementDataTypeInfo.objectType,
+                                  objType.elementObjectTypeInfo)
+    # introspect element type of the container 
+
+    var objinf : dpiObjectTypeInfo
+    discard dpiObjectType_getInfo(objType.elementDataTypeInfo.objectType,objinf.addr)
+    var childobjname = fetchObjectTypeName(objinf)
+
+    objType.childObjectType = OracleObjTypeRef()
+    objType.childObjectType.isCollection = false
+    objType.childObjectType.relatedConn = objType.relatedConn
+    objType.childObjectType.initObjectTypeHdl(objType.elementDataTypeInfo.objectType)
+    # objType.childObjectType = lookupObjectType(objType.relatedConn,childobjname) 
+    # auto introspect the child type. at the moment nested collections not supported 
+  
+  else: 
+    objType.isCollection = false
+    echo "type is no collection - look up attributes"
+  
+  objType.tmpAttrData = cast[ptr dpiData](alloc0(sizeof(dpiData)))
+  # alloc mem for raw fetching attribute values
+
+  objType.initAttributes
+
+  
+
+proc lookupObjectType*(conn : var OracleConnection,
+                       typeName : string) : OracleObjTypeRef = 
+  ## database-object-type lookup - needed for variable-object-binding.
+  ## the returned OracleObjTypeRef is always bound to a specific connection.
+  ## the typeName can be prefixed with the schemaname the object resides.
+  ## if the OracleObjTypeRef is no longer used, the internal resources must be freed
+  ## with "releaseOracleObjType" or utilize the helper template "withOracleObjType" 
+  let tname : cstring = $typeName
+  result = OracleObjTypeRef()
+  result.relatedConn = conn
+  var objHdl : ptr dpiObjectType
+  echo "lookupObjectType: " & typeName
+  if DpiResult(dpiConn_getObjectType(conn.connection,
+                                     tname,
+                                     tname.len.uint32,
+                                     objHdl.addr)).isFailure:
+    raise newException(IOError, "lookupObjectType: " &
+      getErrstr(conn.context.oracleContext))
+    {.effects.}
+  result.initObjectTypeHdl(objHdl)
   return result                              
  
-proc releaseOracleObjType*( objType :  OracleObjTypeRef ) = 
-  ## releases the object type obtained by lookupObjectType.
-  ## the internal memory is released first.
-  dealloc(objType.tmpAttrData)
-
-  if objType.isCollection:
-    objType.childObjectType.releaseOracleObjType
-
-  for i in objType.attributes.low .. objType.attributes.high:
-    if DpiResult(dpiObjectAttr_release(objType.attributes[i])).isFailure:
-      raise newException(IOError, "releaseOracleObjType: " &
-                            getErrstr(objType.relatedConn.context.oracleContext))
-      {.effects.}
- 
-  # release base handle
-  if DpiResult(dpiObjectType_release(objType.baseHdl)).isFailure:
-    raise newException(IOError, "releaseOracleObjType: " &
-                            getErrstr(objType.relatedConn.context.oracleContext))
-    {.effects.}
 
 template isCollection*( obj : OracleObjRef ) : bool =
   ## checks if the element is a collection. true or false
@@ -1305,6 +1408,12 @@ template setupObjBufferedColumn( obj : OracleObjRef ) =
   var attrlen : int = 1
   let dpiSize = sizeof(dpiData)
 
+  if obj.isNil:
+    echo "sbc: object is nil"
+  elif obj.objType.isNil:
+    echo "sbc: objtype is nil"
+ 
+
   if obj.objType.attributes.len > 0:
     attrlen = attrlen + obj.objType.attributes.len
     obj.bufferedColumn = newSeq[ptr dpiData](obj.objType.attributes.len)
@@ -1319,6 +1428,7 @@ template setupObjBufferedColumn( obj : OracleObjRef ) =
       obj.bufferedColumn[i] = cast[ptr dpiData](buffbasetmp)
       buffbasetmp = buffbasetmp + dpiSize
   else:
+    echo "sbc: no attributes found"
     buffbase = cast[int](alloc0( attrlen * dpiSize ))
   
   obj.dataHelper = cast[ptr dpiData](buffbase)
@@ -1334,10 +1444,10 @@ template setupObjBufferedColumn( obj : OracleObjRef ) =
       colmap[i] = column
   # eval all column and detect DpiNativeCType.BYTES ones
   # allocate one block, compute pointers and init dpiData section    
-  obj.bufferedByteTypeBase = cast[ptr byte](alloc0( totalbytes + 1 ))
+  obj.bufferedBytesTypeBase = cast[ptr byte](alloc0( totalbytes + 1 ))
   
   var buffer : ptr dpiData
-  var segptr : int = cast[int](obj.bufferedByteTypeBase)
+  var segptr : int = cast[int](obj.bufferedBytesTypeBase)
 
   for colnum,coltype in colmap:
     # pointer computation and init each dpiData segment
@@ -1347,9 +1457,9 @@ template setupObjBufferedColumn( obj : OracleObjRef ) =
     segptr += coltype.colSize
 
 proc newOracleObject*( objType :  OracleObjTypeRef ) : OracleObjRef = 
-  ## create a new oracle object out of the OracleObjTypeRef which can be used
-  ## for binding(todo:eval) or reading/fetching from the database.
-  ## at the moment subobjects are not implemented (getter/setter adjustment needed).
+  ## creates a new oracle object with the specified OracleObjTypeRef which can be used
+  ## for binding or reading/fetching from the database.
+  ## at the moment subobjects or mutual recursive types are not supported.
   ## ODPI-C and internal resources are hold till releaseOracleObject is called.
   ## variable length references must stay valid till the object sent to the database.
   ## for collection types use: newOracleCollection.
@@ -1370,12 +1480,15 @@ proc newOracleObject*( objType :  OracleObjTypeRef ) : OracleObjRef =
   # setup buffered columns
   result.setupObjBufferedColumn
 
-proc newOracleObjectWrapper(coll : OracleCollectionRef, handle : ptr dpiObject ) : OracleObjRef =
+template newOracleObjectWrapper(coll : OracleCollectionRef, handle : ptr dpiObject ) : OracleObjRef =
   ## internal proc to construct the object wrapper out of a existing collection
+  ## the obtained object is bound to the specified collection-type
   result = OracleObjRef()
+  echo "childtype is nil: " & $coll.objType.childObjectType.isNil
   result.objType = coll.objType.childObjectType
   result.objHdl = handle 
   result.setupObjBufferedColumn 
+  result
 
 proc newOracleCollection*(collectionType : OracleObjTypeRef ) : OracleCollectionRef =
   ## create a new oracle collection object out of the OracleObjTypeRef which can be used
@@ -1407,7 +1520,7 @@ proc newOracleCollection*(collectionType : OracleObjTypeRef ) : OracleCollection
 proc releaseOracleObject*( obj : OracleObjRef ) = 
   ## releases the objects internal references and deallocs buffermem.
   dealloc(obj.dataHelper)
-  dealloc(obj.bufferedByteTypeBase)
+  dealloc(obj.bufferedBytesTypeBase)
   # fetch chunkbase
   
   if DpiResult(dpiObject_release(obj.objHdl)).isFailure:
@@ -1429,7 +1542,8 @@ proc releaseOracleCollection*(obj : OracleCollectionRef ) =
   # obj.childObjectType.releaseOracleObjType 
 
 template lookUpAttrIndexByName( objType : OracleObjTypeRef, attrName : string ) : int =
-  ## used by the attributeValue getter/setter to obtain the index by name
+  ## used by the attributeValue getter/setter to obtain the index by name.
+  ## the attrName must be always UPPERCASE.
   var ctypeidx = -1
   for i in objType.columnTypeList.low .. objType.columnTypeList.high:
     if cmp(attrName, objType.columnTypeList[i].name) == 0:
@@ -1441,7 +1555,9 @@ template lookUpAttrIndexByName( objType : OracleObjTypeRef, attrName : string ) 
           " attrName " & attrName & " not found!")
     {.effects.}
   ctypeidx
-    
+
+template lookUpAttrIndexByName( obj : OracleObjRef, attrName : string ) : int =
+  lookupAttrIndexByName(obj.objType,attrName)
 
 proc getAttributeValue( obj : OracleObjRef, idx : int ) : ptr dpiData = 
   ## internal getter for fetching the value of a type(dbObject) 
@@ -1536,13 +1652,20 @@ proc copyOracleColl*( obj : OracleCollectionRef ) : OracleCollectionRef =
     ## which must be released if no longer needed 
     result = OracleCollectionRef()
     result.objType = obj.objType
-    # result.childObjectType = obj.childObjectType
+    echo "copycoll_objType " & $obj.objType.isNil
+    echo "copyColl_childtype " & $obj.objType.childObjectType.isNil
 
+    result.objType.childObjectType = obj.objType.childObjectType
+ 
     if DpiResult(dpiObject_copy(obj.objHdl,result.objHdl.addr)).isFailure:
       raise newException(IOError, "copyOracleColl: " &
         getErrstr(obj.objType.relatedConn.context.oracleContext))
       {.effects.}
-   
+
+    echo "copycoll_objType res " & $result.objType.isNil
+    echo "copyColl_childtype res " & $result.objType.childObjectType.isNil
+
+    echo "copyOracleColl called"
     result.setupObjBufferedColumn
     result.elementHelper = cast[ptr dpiData](alloc0( sizeof(dpiData) ))
     result.incarnatedChilds = newTable[int, OracleObjRef]()
@@ -1585,7 +1708,8 @@ proc fetchCollectionSize*( collObj : OracleCollectionRef ) : int =
 
 proc deleteElementByIndex*( collObj: OracleCollectionRef, index : int ) = 
   ## delete an element from the collection. the element itself
-  ## is returned and must be freed manually if needed
+  ## is returned and must be freed manually if needed. keep in mind that the
+  ## collection is sparse.
   if DpiResult(dpiObject_deleteElementByIndex(collObj.objHdl,index.int32)).isFailure:
     raise newException(IOError, "deleteElementByIndex: " &
         getErrstr(collObj.objType.relatedConn.context.oracleContext))
@@ -1777,6 +1901,8 @@ proc getCollectionElement(collObj : OracleCollectionRef, index : int) : OracleOb
 
   if collObj.isElementPresent(index):
     if collObj.incarnatedChilds.hasKey(index):
+      # echo "obj incarnated - read map"
+      # TODO: eval why it's called that often with "[][]" access
       result = collObj.incarnatedChilds[index]
     else:
       let objptr = cast[ptr dpiObject](collObj.getElementValueFromBackend(index).
@@ -1788,7 +1914,7 @@ proc getCollectionElement(collObj : OracleCollectionRef, index : int) : OracleOb
 
 
 proc setObject*(param : ParamTypeRef, rownum : int, value : OracleObjRef ) =
-  ## experimental: sets a bind parameter with value type: OracleObjRef
+  ## sets a bind parameter with value type: OracleObjRef
   if DpiResult(dpiVar_setFromObject(param.paramVar,
                                     rownum.uint32,
                                     value.objHdl)).isFailure:
@@ -1797,7 +1923,7 @@ proc setObject*(param : ParamTypeRef, rownum : int, value : OracleObjRef ) =
     {.effects.}   
 
 proc setObject*(param : ParamTypeRef, rownum : int, value : OracleCollectionRef ) =
-  ## experimental: sets a bind parameter with value type: OracleCollectionRef  
+  ## sets a bind parameter with value type: OracleCollectionRef  
   if DpiResult(dpiVar_setFromObject(param.paramVar,
                                     rownum.uint32,
                                     value.objHdl)).isFailure:
@@ -1816,6 +1942,9 @@ proc newTempLob*( conn : var OracleConnection,
     raise newException(IOError, "createConnection: " &
       getErrstr(conn.context.oracleContext))
     {.effects.}
+
+# TODO: varray,blob,clob and AQ support
+# TODO: FIXME: remove Objects bufferedColumn quirk
 
 include setfetchtypes
   # includes all fetch/set templates
@@ -1888,6 +2017,7 @@ when isMainModule:
   # fit into entire window we are done here.
  
   for i,ct in rs.resultColumnTypeIterator:
+    # consume columnTypes of the resultSet
     echo "cname:" & rs.rsColumnNames[i] & " colnumidx: " & 
       $(i+1) & " " & $ct
 
@@ -1937,7 +2067,7 @@ when isMainModule:
                     where department_id = :3;
       end; """
   # implicit results example (ref cursor)
-  # FIXME: typed plsql blocks
+  # FIXME: test typed plsql blocks
 
   var pstmt2 : PreparedStatement
   # refcursor example
@@ -2003,9 +2133,11 @@ when isMainModule:
   conn.executeDDL(ctableq) 
   echo "table hr.demotesttable created"
 
+  var demoObjType = conn.lookupObjectType("HR.DEMO_OBJ")
+
   var insertStmt: SqlQuery =
-    osql""" insert into HR.DEMOTESTTABLE(C1,C2,C3,C4,C5,C6) 
-                                values (:1,:2,:3,:4,:5,:6) """
+    osql""" insert into HR.DEMOTESTTABLE(C1,C2,C3,C4,C5,C6,C7) 
+                                values (:1,:2,:3,:4,:5,:6,:7) """
 
   var pstmt3 : PreparedStatement
   conn.newPreparedStatement(insertStmt, pstmt3, 10)
@@ -2026,7 +2158,7 @@ when isMainModule:
               5.BindIdx,10)                  
   discard pstmt3.addArrayBindParameter(ZonedTimestampTypeParam,
                6.BindIdx,10)
-
+  discard pstmt3.addObjectBindParameter(7.BindIdx,demoObjType,10)
   # if a nativeType/oracleType combination is not implemented by ODPI-C
   # you will receive an exception here
 
@@ -2039,10 +2171,22 @@ when isMainModule:
                 some("5"),some("6"),some("7"),some("8"),some("9"),
                 some("10"),some("11"),some("12")]
     # strings and bytearrays are pointer types and need to stay valid till the transaction is committed.
-    # exception: OracleObject types (each objcolumn of string/bytearray is buffered)
+    # exception: OracleObject types (each objcolumn of string/bytearray are buffered)
+   
+    var objBuffer = newSeq[OracleObjRef](13)
+    for i in 0..12:
+      echo "new object"
+      objBuffer[i] = demoObjType.newOracleObject
+    
+    # init obj buffer for the next example 
     conn.withTransaction: # commit after this block
       # cleanup of preparedStatement beyond this block
       var varc2 : Option[int64]
+
+      #var obj1 = demoObjType.newOracleObject      
+      #obj1.setDouble(0,some(22.float64))
+      #obj1.setString(1,some("teststring"))
+      
       for i,bufferRowIdx in pstmt3.bulkBindIterator(12,8):
         # i: count over 13 entries - with a buffer window of 9 elements
         # if the buffer window is filled
@@ -2060,6 +2204,16 @@ when isMainModule:
         pstmt3[4.BindIdx][bufferRowIdx].setFloat(some(i.float32+0.12.float32))
         pstmt3[5.BindIdx][bufferRowIdx].setDouble(some(i.float64+99.12345.float64))
         pstmt3[6.BindIdx][bufferRowIdx].setDateTime(some(getTime().local))
+        objBuffer[i].setDouble("NUMBERVALUE",some(i.float64))
+        # access by columnName
+        objBuffer[i].setString(1,some("teststring" & $i))
+        # or columnIndex
+        pstmt3[7.BindIdx].setObject(bufferRowIdx,objBuffer[i])
+    
+    for i in objBuffer.low..objBuffer.high:
+      objBuffer[i].releaseOracleObject
+    objBuffer.setLen(0)
+
     # example: reuse of preparedStatement and insert another 8 rows
     # with a buffer window of 3 elements 
     var pks2 = @[some("test_äüö15"),some("test_äüö16"),some("test_äüö17"),some("test_äüö18"),
@@ -2074,10 +2228,11 @@ when isMainModule:
         pstmt3[4.BindIdx][bufferRowIdx].setFloat(none(float32))     # dbNull
         pstmt3[5.BindIdx][bufferRowIdx].setDouble(none(float64))    # dbNull
         pstmt3[6.BindIdx][bufferRowIdx].setDateTime(none(DateTime)) # dbNull
-
-
+        pstmt3[7.BindIdx][bufferRowIdx].setDbNull
+        # TODO: eval howto set a bound object within existing buffer to dbNull
+   
   var selectStmt: SqlQuery = osql"""select c1,c2,rawtohex(c3)
-                                         as c3,c4,c5,c6 from hr.demotesttable"""
+                                         as c3,c4,c5,c6,c7 from hr.demotesttable"""
       # read now the committed stuff
 
   var pstmt4 : PreparedStatement
@@ -2233,6 +2388,10 @@ when isMainModule:
     echo " size of collection: " & $collection.fetchCollectionSize
 
     var copyOfColl = collection.copyOracleColl
+
+    echo "before copy: childtype is: " & $collection.objType.childObjectType.isNil
+
+
     # copies the entire collection
     withOracleCollection(copyOfColl):
       echo " size of copied collection: " &  
@@ -2340,7 +2499,6 @@ when isMainModule:
       var nSelectRset : ResultSet
       newPreparedStatement(conn,nestedtableSelect,nSelectPstmt,10)
 
-
       withPreparedStatement(nSelectPstmt):
         nSelectPstmt.executeStatement(nSelectRset) 
         # eval the result columns:
@@ -2349,7 +2507,7 @@ when isMainModule:
         
         for row in nSelectRset.resultSetRowIterator:       
              echo $row[0].fetchString
-             # FIXME: readout object 
+             # FIXME: readout collection object 
              
              # TODO: consolidate api. difference between parameter access:
              # (readout binds: paramTypeRef[rowidx]->ptr dpiData ) and resultset:
