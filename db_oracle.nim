@@ -941,39 +941,12 @@ proc executeAndInitResultSet(prepStmt: var PreparedStatement,
       # and the object-type
       if not prepStmt.rsOutputCols[i-1].objectTypeHandle.isNil:
         echo "---------- object_type_handle detected ptr dpiObjectType------------"
-        var objinf : dpiObjectTypeInfo
-        discard dpiObjectType_getInfo(prepStmt.rsOutputCols[i-1].objectTypeHandle,objinf.addr)
-        echo "object_name: " & fetchObjectTypeName(objinf)
-        echo "num_attributes " & $objinf.numAttributes
-        echo "is_collection " & $objinf.isCollection
-        if objinf.isCollection == 1:
-          var di : dpiDataTypeInfo = objinf.elementTypeInfo
-          echo $di.defaultNativeTypeNum
-          if di.defaultNativeTypeNum == DpiNativeCType.OBJECT.ord:
-            echo "collection contains objects"
-            var objtype: ptr dpiObjectType = di.objectType
-            var objtypeInfo : dpiObjectTypeInfo
-            discard dpiObjectType_getInfo(objtype,objtypeInfo.addr)
-            var numattr = objtypeInfo.numAttributes 
-            var objname = fetchObjectTypeName(objtypeInfo)
-            echo objname & " numattributes: " & $numattr
-            # FIXME: function to fetch the object-type with the info references
-            # dpiObjectType_getAttributes(dpiObjectType *objType, uint16_t numAttributes, dpiObjectAttr **attributes)¶
-            #eval object type and attributes    
-            # dpiObjectType *dpiDataTypeInfo.objectType      
-            # discard dpiObjectType_getAttributes(result.elementDataTypeInfo.objectType,)
-            # xxx
-        else:
-          echo "column_type is object"
-        discard # TODO
-        # get number of attributes with:
-        # dpiObjectType_getInfo(dpiObjectType *objType, dpiObjectTypeInfo *info)
-        # get the attributes handles with:
-        # int dpiObjectType_getAttributes(dpiObjectType 
-        # *objType, uint16_t numAttributes, dpiObjectAttr **attributes)
-        # TODO: testcase with container type in result
-      
-        # ptr dpiObjectAttr 
+        #var objinf : dpiObjectTypeInfo
+        #discard dpiObjectType_getInfo(prepStmt.rsOutputCols[i-1].objectTypeHandle,objinf.addr)
+        var rcolobjtype = OracleObjTypeRef()
+        rcolobjtype.initObjectTypeHdl(prepStmt.rsOutputCols[i-1].objectTypeHandle)
+        prepStmt.rsOutputCols[i-1].rObjectTypeRef = rcolobjtype
+        # TODO: rework. all attributes now in paramVars rObjectTypeRef
       else:
         prepStmt.rsOutputCols[i-1].rAttributeHdl = @[]
 
