@@ -294,7 +294,7 @@ template fetchDateTime*( param : OracleObjRef , index : int) : Option[DateTime] 
 
 template fetchDateTime*( param : OracleObjRef , attrName : string) : Option[DateTime] =
   ## access template for db-types
-  getAttributeValue(param,lookUpAttrIndexByName(attrName)).fetchDateTime
+  getAttributeValue(param,lookUpAttrIndexByName(param,attrName)).fetchDateTime
 
 proc setDateTime*(param : ptr dpiData , value : Option[DateTime] ) = 
     ## bind parameter setter DateTime type. this setter operates always with index 1
@@ -359,7 +359,7 @@ template fetchString*( param :  OracleObjRef , index : int) : Option[string] =
 template fetchString*( param :  OracleObjRef , 
                        attrName : string) : Option[string] =
   ## access template for db-types
-  getAttributeValue(param,lookUpAttrIndexByName(attrName)).fetchString
+  getAttributeValue(param,lookUpAttrIndexByName(param,attrName)).fetchString
 
 proc setString*(val : ptr dpiData, value : Option[string]) = 
   ## sets the string of the odpi-data buffer 
@@ -419,7 +419,7 @@ template fetchBytes*( param : OracleObjRef , index : int) : Option[seq[byte]] =
 
 template fetchBytes*( param : OracleObjRef , attrName : string) : Option[seq[byte]] =
   ## access template for db-types
-  getAttributeValue(param,lookUpAttrIndexByName(attrName)).fetchBytes
+  getAttributeValue(param,lookUpAttrIndexByName(param,attrName)).fetchBytes
 
 
 template setBytes*( val : ptr dpiData, value : Option[seq[byte]] ) =
