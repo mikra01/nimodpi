@@ -163,8 +163,6 @@ type
     # needed for reading/writing object attributes
     rObjectTypeRef : OracleObjTypeRef
     # new objecttype handle for reading/writing objects
-    rAttributeInfo : seq[dpiObjectAttrInfo]
-    # unused
     paramVar: ptr dpiVar
     # ODPI-C ptr to the variable def
     buffer: ptr dpiData
@@ -747,8 +745,7 @@ proc addBindParameter*(ps: var PreparedStatement,
   ## the type of the parameter is implicit in,out or in/out.
   ## this depends on the underlying query
   result = newParamTypeRef(ps, BindInfo(kind: BindInfoType.byPosition,
-                                paramVal: idx),
-                  coltype,false,1.int)
+                                paramVal: idx), coltype,false,1.int)
   newVar(ps, result)
   ps.boundParams.add(result)
                            
@@ -844,7 +841,7 @@ proc addObjectBindParameter*(ps: var PreparedStatement,
                              objType :  OracleObjTypeRef,
                              rowCount : int, 
                              isPlSqlArray : bool = false) : ParamTypeRef =
-  ## constructs a object bindparameter by parameter index.
+  ## constructs a object bindparameter by parameter name (paramName)
   ## this bindparameter is an array parameter type.  isPlSqlArray is true only for
   ## index by tables.
   ## array parameters are used for bulk-insert or plsql-array-handling.
@@ -884,6 +881,7 @@ proc releaseOracleObjType( objType :  OracleObjTypeRef, isDerived : bool ) =
 
   # release base handle
   if not isDerived:
+    # only release not derived handles. if derived, ODPI-C will handle it
     if DpiResult(dpiObjectType_release(objType.baseHdl)).isFailure:
       raise newException(IOError, "releaseOracleObjType: " &
                               getErrstr(objType.relatedConn.context.oracleContext))
@@ -908,9 +906,6 @@ template destroy(rsVar : ParamTypeRef , prepStmt : var PreparedStatement) =
     raise newException(IOError, "destroy: " &
         getErrstr(prepStmt.relatedConn.context.oracleContext))
     {.effects.}
-  # dpiObjectAttr_release(dpiObjectAttr *attr)
-  # since all handles are retrieved by dpiQueryInfo
-  # we do not need to free these handles explicitly
 
 
 proc destroy*(prepStmt: var PreparedStatement) =
@@ -919,7 +914,8 @@ proc destroy*(prepStmt: var PreparedStatement) =
   ## the prepared statement is no longer in use.
   ## additional resources of a present resultSet
   ## are also freed. a preparedStatement with refCursor can not
-  ## be reused.
+  ## be reused
+  # TODO: evaluate why
   for i in prepStmt.boundParams.low .. prepStmt.boundParams.high:
     prepStmt.boundParams[i].destroy(prepStmt)
     
@@ -1018,13 +1014,11 @@ proc executeAndInitResultSet(prepStmt: var PreparedStatement,
       # dpiObjType->getInfo->dpiObjectTypeInfo ->elementTypeInfo->dpiDataTypeInfo->dpiObjType
       # and the object-type
       if not prepStmt.rsOutputCols[i-1].objectTypeHandle.isNil:
-        echo "---------- object_type_handle detected in resultColumn ptr dpiObjectType------------"
         var rcolobjtype = OracleObjTypeRef()
         # special case: baseObjectHandle derived out of resultset and should not be freed afterwards
         rcolobjtype.initObjectTypeHdl(prepStmt.rsOutputCols[i-1].objectTypeHandle)
         # init object type and in case of collection the childtype
         prepStmt.rsOutputCols[i-1].rObjectTypeRef = rcolobjtype
-        # TODO: rework. all attributes now in paramVars rObjectTypeRef
       else:
         prepStmt.rsOutputCols[i-1].rAttributeHdl = @[]
 
@@ -1038,21 +1032,21 @@ proc executeAndInitResultSet(prepStmt: var PreparedStatement,
           getErrstr(prepStmt.relatedConn.context.oracleContext))
         {.effects.}
     
-template openRefCursor(ps : PreparedStatement, 
-                       p : ParamTypeRef,
+proc openRefCursor(ps : var PreparedStatement, 
+                       p : var ParamTypeRef,
                        outRefCursor : var ResultSet,
                        bufferedRows : int,
                        dpiMode: uint32 = DpiModeExec.DEFAULTMODE.ord) =
-  if param.isFetched:
+  if p.isFetched:
     # quirky
     raise newException(IOError, "openRefCursor: " &
        """ reexecute of the preparedStatement with refCursor not supported """)
     {.effects.}
                     
-  if param.columnType.nativeType == DpiNativeCType.STMT and
-    param.columnType.dbType == DpiOracleType.OTSTMT:
-    param.isFetched = true
-    outRefCursor.pstmt = param[0].value.asStmt
+  if p.columnType.nativeType == DpiNativeCType.STMT and
+    p.columnType.dbType == DpiOracleType.OTSTMT:
+    p.isFetched = true
+    outRefCursor.pstmt = p[0].value.asStmt
     outRefCursor.relatedConn = ps.relatedConn
     outRefCursor.bufferedRows = bufferedRows
   
@@ -1066,17 +1060,17 @@ template openRefCursor(ps : PreparedStatement,
     {.effects.}
                     
 
-proc openRefCursor*(ps: var PreparedStatement, idx : BindIdx,
+template openRefCursor*(ps: var PreparedStatement, idx : BindIdx,
                     outRefCursor: var ResultSet,
                     bufferedRows: int,
                     dpiMode: uint32 = DpiModeExec.DEFAULTMODE.ord) =
   ## opens the refcursor on the specified bind parameter.
   ## executeStatement must be called before open it.
   ## throws IOError in case of an error
-  let param : ParamTypeRef = ps[idx.BindIdx]
+  var param : ParamTypeRef = ps[idx.BindIdx]
   openRefCursor(ps,param,outRefCursor,bufferedRows,dpiMode)
 
-proc openRefCursor*(ps: var PreparedStatement, 
+template openRefCursor*(ps: var PreparedStatement, 
                       paramName : string,
                       outRefCursor: var ResultSet,
                       bufferedRows: int,
@@ -1084,7 +1078,7 @@ proc openRefCursor*(ps: var PreparedStatement,
   ## opens the refcursor on the specified bind parameter.
   ## executeStatement must be called before open it.
   ## throws IOError in case of an error
-  let param = ps[paramName]
+  var param = ps[paramName]
   openRefCursor(ps,param,outRefCursor,bufferedRows,dpiMode)
 
 template resetParamRows(ps : var PreparedStatement) =
@@ -1340,9 +1334,6 @@ proc introspectObjectType( base: OracleObjTypeRef , attr : ptr dpiObjectAttr ) :
   ## introspects the attribute - raises exception if the attribute is not type: OBJECT
   ## or the object's column was already introspected
   discard
-
-{.experimental: "codeReordering".}
-
   
 
 proc lookupObjectType*(conn : var OracleConnection,
@@ -1377,7 +1368,7 @@ template isCollection*( obj : OracleObjRef ) : bool =
 template setupObjBufferedColumn( obj : OracleObjRef ) = 
   ## internal template to initialize 
   ## the objects column buffer.
-  ## the objects objType must be initialized.
+  ## the objects objType must be already initialized.
   ## all attributes are evaluated and extra memory is allocated
   ## in case of string and byte-types
   var buffbase : int 
@@ -1469,7 +1460,7 @@ template initOracleCollection(collType: OracleObjTypeRef, collection: OracleColl
 
 
 proc newOracleCollection*(collectionType : OracleObjTypeRef ) : OracleCollectionRef =
-  ## create a new oracle collection object out of the OracleObjTypeRef which can be used
+  ## create a new oracle collection object out of the OracleObjTypeRef, which can be used
   ## for binding(todo:eval) or reading/fetching from the database.
   ## ODPI-C and internal resources are hold till releaseOracleCollection is called
   ## (see withCollection helper template).
@@ -1581,40 +1572,6 @@ template getCollection( row : DpiRow, colName : string ) : OracleCollectionRef =
   ## experimental getter for resultSet collection handling
   ## the object reference returned must be freed
   getCollection(row,row.rset.lookupRowIndexByName(colname))
-
-# proc getObjectAttributeValue( handle : ptr dpiObject, 
-#                              idx : int, 
-#                              objtype : ref OracleObjTypeRef) : ptr dpiData  =
-#  ## retrieves the object attribute by type and raw dpiObject handle.
-#  ## the object handle can be retrieved out of a dpiData handle
-#  ## with help of the template getObjectHandle. the internal tmpAttrData
-#  ## is populated. the pointer stays valid till owning object is released  
-#  ## base proc on attribute types (get)                       
-#  if DpiResult(dpiObject_getAttributeValue(
-#                handle,
-#                objtype.attributes[idx],
-#                objtype.columnTypeList[idx].nativeType.dpiNativeTypeNum,
-#                objtype.tmpAttrData)
-#               ).isFailure:
-#    raise newException(IOError, "getObjectAttribute: " &
-#      getErrstr(objType.relatedConn.context.oracleContext))
-#    {.effects.}
-#  result = objtype.tmpAttrData  
-
-# proc setObjectAttributeValue( handle : ptr dpiObject,
-#                              idx : int, 
-#                              objtype : ref OracleObjTypeRef) =
-#  ## sets the object attribute by type and raw dpiObject handle.
-#  ## the object handle can be retrieved out of a dpiData handle
-#  ## with help of the template getObjectHandle.
-                       
-#  if DpiResult(dpiObject_setAttributeValue(handle,
- #              objtype.attributes[idx],
- #              objtype.columnTypeList[idx].nativeType.dpiNativeTypeNum,
- #              objtype.tmpAttrData)).isFailure:
- #   raise newException(IOError, "getObjectAttribute: " &
- #     getErrstr(objType.relatedConn.context.oracleContext))
- #   {.effects.}
 
 
 proc setAttributeValue( obj : OracleObjRef, idx: int ) = 
@@ -2162,8 +2119,9 @@ when isMainModule:
   # https://cx-oracle.readthedocs.io/en/latest/user_guide/tuning.html#choosing-values-for-arraysize-and-prefetchrows 
   pstmt3.withPreparedStatement:
     var tseq = some(@[(0xAA).byte,0xBB.byte,0xCC.byte])
-    var pks = @[some("test_äüö0"),some("test_äüö1"),some("test_äüö2"),some("test_äüö3"),some("test_äüö4"),
-                some("5"),some("6"),some("7"),some("8"),some("9"),
+    var pks = @[some("test_äüö0"),some("test_äüö1"),some("test_äüö2"),
+                some("test_äüö3"),some("test_äüö4"),some("5"),
+                some("6"),some("7"),some("8"),some("9"),
                 some("10"),some("11"),some("12")]
     # strings and bytearrays are pointer types and need to stay valid till the transaction is committed.
     # exception: OracleObject types (each objcolumn of string/bytearray are buffered)
@@ -2410,7 +2368,6 @@ when isMainModule:
     
       if copyOfColl.isElementPresent(0):
         echo "elem 0 in collection present"
-        # res = copyOfColl.getCollectionElement(0)
                                   
       else:
         echo "elem 0 in collection not present. set to dbNull"
@@ -2525,8 +2482,7 @@ when isMainModule:
                    $cr[i].fetchString("STRINGVALUE")  & " | " &
                    $cr[i].fetchString("FIXEDCHARVALUE")  & " | " &
                    $cr[i].fetchDateTime("DATEVALUE")  & " | " &
-                   $cr[i].fetchDateTime("TIMESTAMPVALUE")  & " | " & hexcolumn
-             
+                   $cr[i].fetchDateTime("TIMESTAMPVALUE")  & " | " & hexcolumn             
                  # access object attributes by attrName or attribute column index
              
       # TODO: try to filter against a nested-table object
