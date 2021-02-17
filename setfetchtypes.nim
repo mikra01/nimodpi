@@ -32,7 +32,7 @@ template fetchBoolean*( param : OracleObjRef , index : int) : Option[bool] =
 
 template fetchBoolean*( param : OracleObjRef , attrName : string) : Option[bool] =
   ## access template for db-types
-  getAttributeValue(param,lookUpAttrIndexByName(attrName)).fetchBoolean
+  getAttributeValue(param,lookupObjAttrIndexByName(param,attrName)).fetchBoolean
   
 template setBoolean*(param : ptr dpiData, value : Option[bool] ) =
     ## bind parameter setter boolean type.
@@ -59,7 +59,7 @@ template setBoolean*( param : OracleObjRef ,
                       attrName : string,  
                       value : Option[bool]) =
   ## access template for db-types
-  setBoolean(param,lookUpAttrIndexByName(param,attrName),value)
+  setBoolean(param,lookupObjAttrIndexByName(param,attrName),value)
 
 # simple type conversion templates.
 template fetchFloat*(val : ptr dpiData) : Option[float32] =
@@ -78,7 +78,7 @@ template fetchFloat*( param : OracleObjRef , index : int) : Option[float] =
   
 template fetchFloat*( param : OracleObjRef , attrName : string) : Option[float32] =
   ## access template for db-types
-  getAttributeValue(param,lookUpAttrIndexByName(attrName)).fetchFloat
+  getAttributeValue(param,lookupObjAttrIndexByName(param,attrName)).fetchFloat
 
 proc setFloat*( param : ptr dpiData, value : Option[float32]) =
     ## bind parameter setter float32 type. 
@@ -102,7 +102,7 @@ template setFloat*( param : OracleObjRef ,
 template setFloat*( param : OracleObjRef , 
                     attrName : string,  
                     value : Option[float32]) =
-  setFloat(param,lookUpAttrIndexByName(attrName),value)
+  setFloat(param,lookupObjAttrIndexByName(param,attrName),value)
 
 template fetchDouble*(val : ptr dpiData) : Option[float64] =
     ## fetches the specified value as double (Nims 64 bit type). the value is copied 
@@ -120,7 +120,7 @@ template fetchDouble*( param : OracleObjRef , index : int) : Option[float64] =
 
 template fetchDouble*( param : OracleObjRef , attrName : string) : Option[float64] =
   ## access template for db-types
-  getAttributeValue(param,lookUpAttrIndexByName(param,attrName)).fetchDouble
+  getAttributeValue(param,lookupObjAttrIndexByName(param,attrName)).fetchDouble
 
 proc setDouble(param : ptr dpiData, value : Option[float64]) =
     ## bind parameter setter float64 type. 
@@ -144,7 +144,7 @@ template setDouble*( param : OracleObjRef ,
                      attrName : string,  
                      value : Option[float64]) =
   ## access template for db-types
-  setDouble(param,lookUpAttrIndexByName(param,attrName),value)
+  setDouble(param,lookupObjAttrIndexByName(param,attrName),value)
 
 template fetchUInt64*(val : ptr dpiData) : Option[uint64] =
     ## fetches the specified value as double (Nims 64 bit type). the value is copied 
@@ -161,7 +161,7 @@ template fetchUInt64*( param : OracleObjRef, index : int ) : Option[uint64] =
 
 template fetchUInt64*( param : OracleObjRef , attrName : string) : Option[uint64] =
   ## access template for db-types
-  getAttributeValue(param,lookUpAttrIndexByName(attrName)).fetchUInt64
+  getAttributeValue(param,lookupObjAttrIndexByName(param,attrName)).fetchUInt64
 
 template setUInt64*(param : ptr dpiData, value : Option[uint64]) =
     ## bind parameter setter uint64 type. 
@@ -186,7 +186,7 @@ template setUInt64*( param : OracleObjRef ,
                      attrName : string,  
                      value : Option[uint64]) =
   ## access template for db-types
-  setUInt64(param,lookUpAttrIndexByName(param,attrName),value)
+  setUInt64(param,lookupObjAttrIndexByName(param,attrName),value)
 
 template fetchInt64*(val : ptr dpiData) : Option[int64] =
     ## fetches the specified value as double (Nims 64 bit type). the value is copied 
@@ -205,7 +205,7 @@ template fetchInt64*( param : OracleObjRef , index : int) : Option[int64] =
 template fetchInt64*( param : OracleObjRef , 
                       attrName : string) : Option[int64] =
   ## access template for db-types
-  getAttributeValue(param,lookUpAttrIndexByName(attrName)).fetchInt64
+  getAttributeValue(param,lookupObjAttrIndexByName(param,attrName)).fetchInt64
 
 proc setInt64*( param : ptr dpiData, value : Option[int64]) =
      ## bind parameter setter int64 type. 
@@ -230,7 +230,7 @@ template setInt64*( param : OracleObjRef ,
                     attrName : string,  
                     value : Option[int64]) =
   ## access template for db-types
-  setInt64(param,lookUpAttrIndexByName(param,attrName),value)
+  setInt64(param,lookupObjAttrIndexByName(param,attrName),value)
 
 template fetchIntervalDS*(val : ptr dpiData ) : Option[Duration] =
     # todo: implement
@@ -248,7 +248,7 @@ template fetchIntervalDS*( param : OracleObjRef , index : int) : Option[Duration
 
 template fetchIntervalDS*( param : OracleObjRef , attrName : string) : Option[Duration] =
   ## access template for db-types
-  getAttributeValue(param,lookUpAttrIndexByName(attrName)).fetchIntervalDS
+  getAttributeValue(param,lookupObjAttrIndexByName(param,attrName)).fetchIntervalDS
 
 template setIntervalDS*(param : ptr dpiData , value : Option[Duration]) =
     ## bind parameter setter IntervalDS type. this setter operates always with index 1
@@ -276,7 +276,7 @@ template setIntervalDS*( param : OracleObjRef ,
                          attrName : string,  
                          value : Option[Duration]) =
   ## access template for db-types
-  setIntervalDS(param,lookUpAttrIndexByName(param,attrName),value)
+  setIntervalDS(param,lookupObjAttrIndexByName(param,attrName),value)
 
 template fetchDateTime*( val : ptr dpiData ) : Option[DateTime] =
     ## fetches the specified value as DateTime. the value is copied 
@@ -294,7 +294,7 @@ template fetchDateTime*( param : OracleObjRef , index : int) : Option[DateTime] 
 
 template fetchDateTime*( param : OracleObjRef , attrName : string) : Option[DateTime] =
   ## access template for db-types
-  getAttributeValue(param,lookUpAttrIndexByName(param,attrName)).fetchDateTime
+  getAttributeValue(param,lookupObjAttrIndexByName(param,attrName)).fetchDateTime
 
 proc setDateTime*(param : ptr dpiData , value : Option[DateTime] ) = 
     ## bind parameter setter DateTime type. this setter operates always with index 1
@@ -332,7 +332,7 @@ template setDateTime*( param : OracleObjRef ,
 template setDateTime*( param : OracleObjRef , 
                        attrName : string,  
                        value : Option[DateTime]) =
-  setDateTime(param,lookUpAttrIndexByName(param,attrName),value)
+  setDateTime(param,lookupObjAttrIndexByName(param,attrName),value)
 
 
 template fetchString*( val : ptr dpiData ) : Option[string] =
@@ -359,7 +359,7 @@ template fetchString*( param :  OracleObjRef , index : int) : Option[string] =
 template fetchString*( param :  OracleObjRef , 
                        attrName : string) : Option[string] =
   ## access template for db-types
-  getAttributeValue(param,lookUpAttrIndexByName(param,attrName)).fetchString
+  getAttributeValue(param,lookupObjAttrIndexByName(param,attrName)).fetchString
 
 proc setString*(val : ptr dpiData, value : Option[string]) = 
   ## sets the string of the odpi-data buffer 
@@ -400,7 +400,7 @@ template setString*( param : OracleObjRef ,
                      attrName : string,  
                      value : Option[string]) =
   ## access template for db-types
-  setString(param,lookUpAttrIndexByName(param,attrName),value)
+  setString(param,lookUpObjAttrIndexByName(param,attrName),value)
 
 template fetchBytes*( val : ptr dpiData ) : Option[seq[byte]] =
     ## fetches the specified value as seq[byte]. the byte array is copied
@@ -419,7 +419,7 @@ template fetchBytes*( param : OracleObjRef , index : int) : Option[seq[byte]] =
 
 template fetchBytes*( param : OracleObjRef , attrName : string) : Option[seq[byte]] =
   ## access template for db-types
-  getAttributeValue(param,lookUpAttrIndexByName(param,attrName)).fetchBytes
+  getAttributeValue(param,lookupObjAttrIndexByName(param,attrName)).fetchBytes
 
 
 template setBytes*( val : ptr dpiData, value : Option[seq[byte]] ) =
@@ -449,7 +449,7 @@ template setBytes*( param : OracleObjRef ,
                     attrName : string,  
                     value : Option[seq[byte]]) =
   ## access template for db-types
-  setBytes(param,lookUpAttrIndexByName(param,attrName),value)
+  setBytes(param,lookupObjAttrIndexByName(param,attrName),value)
 
 template fetchRowId*( param : ptr dpiData ) : ptr dpiRowid =
     ## fetches the rowId (internal representation).

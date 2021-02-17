@@ -1,6 +1,7 @@
 import os
 import nimterop/[build, cimport]
 
+
 # Copyright (c) 2019 Michael Krauter
 # MIT-license - please see the LICENSE-file for details.
 
@@ -10,16 +11,14 @@ nim oracle wrapper (ODPI-C).
 include this file into your project if you like to access an oracle database
 (no lib, static binding so far).
 
-This is the low-level wrapper part; so no extra convenience glue logic provided.
-Original API-names preserved (structs and function) for easier linkage with the original documentation.
+This is the low-level wrapper part (C lang); so no extra convenience glue logic provided.
 
-if you like a higher-level wrapper, include db_oracle into your project.
+if you like a nimish access layer, include db_oracle into your project.
 
 ]#
 
 const
   baseDir = currentSourcePath.parentDir()/"build"
-
   srcDir = baseDir/"odpi"
 
 static:

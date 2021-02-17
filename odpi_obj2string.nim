@@ -3,7 +3,7 @@
 
 const hChars = "0123456789ABCDEF"
 
-proc hex2Str*(par: var openArray[byte]): string =
+proc hex2Str*(par: openArray[byte]): string =
   result = newString(2 + ((par.len) shl 1)) # len mul 2 plus 2 extra chars
   result[0] = '0'
   result[1] = 'x'
@@ -87,6 +87,7 @@ template `$`*(p: OracleObjTypeRef ): string =
 template `$`*(p:  OracleObjRef ): string =
     ## string representation OracleObjTypeRef
     " obj of type: " & $p.objType 
+    # missing: name, isCollection, Attributes
  
 template `$`*(p: ParamTypeRef): string =
   $p.bindPosition & " " & $p.columnType & " rowbuffersize: " & $p.rowbuffersize

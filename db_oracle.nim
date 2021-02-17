@@ -1,5 +1,6 @@
 import os,times,options,strformat,tables
 import nimodpi
+export nimodpi
 
 # Copyright (c) 2019 Michael Krauter
 # MIT-license - please see the LICENSE-file for details.
@@ -225,7 +226,7 @@ type
     bufferedRows*: int # refers to the maxArraySize
     # used for both reading and writing to the database 
     rsOutputCols: ParamTypeList
-    # auto-populated list for returning statements
+    # auto-introspected list for returning statements
     rsCurrRow*: int # reserved for iterating
     rsMoreRows*: bool #
     rsBufferRowIndex*: int 
@@ -244,16 +245,12 @@ type
     rawRow : seq[ptr dpiData]
     ## contains all data pointers of the current iterated row
     ## of the ResultSet
-    ## FIXME: objectType: wrap the raw ptr so that the corresponding
-    ## type can be retrieved. at the moment the caller needs to
-    ## specify the object-type to fetch the object-members.
-
 
   OracleObjRef* = ref object of RootObj
-    ## thin wrapper for an object instance
+    ## thin wrapper of an object instance
     ## related to a specific type handle. this kind of
     ## object need to be disposed if no longer needed.
-    ## typically used for write operations (client->database).
+    ## typically used for both write and operations (client->database).
     objType : OracleObjTypeRef
     objHdl : ptr dpiObject
     # the odpi-c object handle. this ref needs to be freed if no
@@ -268,15 +265,14 @@ type
     bufferedBytesTypeBase : ptr byte
    
   OracleCollectionRef* = ref object of OracleObjRef
-    ## thin wrapper for a collection type element.
+    ## thin wrapper of a collection type element.
     ## this kind of object need to be disposed if no
     ## longer needed.
     elementHelper : ptr dpiData
     # one dpiData chunk 
-    # childObjectType : OracleObjTypeRef
     # moved to typedef
     incarnatedChilds : TableRef[int, OracleObjRef]
-    # tracks incarnated objects for disposal
+    # tracks incarnated objects for auto-disposal 
 type
   Lob* = object
     ## TODO: implement
@@ -307,7 +303,7 @@ template newRawColTypeParam*(bytelen: int): ColumnType =
    "",0.int16,0.uint8
   )
 
-template `[]`*(rs: var ResultSet, colidx: int): ParamTypeRef =
+template `[]`*(rs: ResultSet, colidx: int): ParamTypeRef =
   ## selects the column of the resultSet.
   rs.rsOutputCols[colidx]
 
@@ -1387,7 +1383,7 @@ template setupObjBufferedColumn( obj : OracleObjRef ) =
   var buffbase : int 
   var attrlen : int = 1
   let dpiSize = sizeof(dpiData)
-
+ 
   if obj.objType.attributes.len > 0:
     attrlen = attrlen + obj.objType.attributes.len
     obj.bufferedColumn = newSeq[ptr dpiData](obj.objType.attributes.len)
@@ -1402,7 +1398,6 @@ template setupObjBufferedColumn( obj : OracleObjRef ) =
       obj.bufferedColumn[i] = cast[ptr dpiData](buffbasetmp)
       buffbasetmp = buffbasetmp + dpiSize
   else:
-    echo "sbc: no attributes found"
     buffbase = cast[int](alloc0( attrlen * dpiSize ))
   
   obj.dataHelper = cast[ptr dpiData](buffbase)
@@ -1410,6 +1405,7 @@ template setupObjBufferedColumn( obj : OracleObjRef ) =
   var totalbytes = 0
 
   var colmap = newTable[int,ColumnType]()
+
   for i,column in obj.objType.columnTypeList:
     if column.nativeType == DpiNativeCType.BYTES:
       if not column.sizeIsBytes:
@@ -1458,7 +1454,6 @@ template newOracleObjectWrapper(coll : OracleCollectionRef, handle : ptr dpiObje
   ## internal proc to construct the object wrapper out of a existing collection
   ## the obtained object is bound to the specified collection-type
   result = OracleObjRef()
-  echo "childtype is nil: " & $coll.objType.childObjectType.isNil
   result.objType = coll.objType.childObjectType
   result.objHdl = handle 
   result.setupObjBufferedColumn 
@@ -1466,10 +1461,11 @@ template newOracleObjectWrapper(coll : OracleCollectionRef, handle : ptr dpiObje
 
 
 template initOracleCollection(collType: OracleObjTypeRef, collection: OracleCollectionRef) = 
-  result.objType =  collType
-  result.setupObjBufferedColumn
-  result.elementHelper = cast[ptr dpiData](alloc0( sizeof(dpiData) ))
-  result.incarnatedChilds = newTable[int, OracleObjRef]()
+  ## initializes a OracleCollection with the params out of the associated OracleObjType
+  collection.objType =  collType
+  collection.setupObjBufferedColumn
+  collection.elementHelper = cast[ptr dpiData](alloc0( sizeof(dpiData) ))
+  collection.incarnatedChilds = newTable[int, OracleObjRef]()
 
 
 proc newOracleCollection*(collectionType : OracleObjTypeRef ) : OracleCollectionRef =
@@ -1516,7 +1512,7 @@ proc releaseOracleCollection*(obj : OracleCollectionRef ) =
 
   obj.incarnatedChilds.clear
 
-template lookUpAttrIndexByName( objType : OracleObjTypeRef, attrName : string ) : int =
+template lookupObjAttrIndexByName( objType : OracleObjTypeRef, attrName : string ) : int =
   ## used by the attributeValue getter/setter to obtain the index by name.
   ## the attrName must be always UPPERCASE.
   var ctypeidx = -1
@@ -1526,13 +1522,27 @@ template lookUpAttrIndexByName( objType : OracleObjTypeRef, attrName : string ) 
       break;
       
   if ctypeidx == -1:
-    raise newException(IOError, "lookupAttrIndexByName: " &
+    raise newException(IOError, "lookupObjAttrIndexByName: " &
           " attrName " & attrName & " not found!")
     {.effects.}
   ctypeidx
 
-template lookUpAttrIndexByName( obj : OracleObjRef, attrName : string ) : int =
-  lookupAttrIndexByName(obj.objType,attrName)
+template lookupObjAttrIndexByName( obj : OracleObjRef, attrName : string ) : int =
+  lookupObjAttrIndexByName(obj.objType,attrName)
+
+template lookupRowIndexByName( ps : ptr PreparedStatement, attrName : string) : int = 
+  var rowidx = -1
+  
+  for i in ps.rsOutputCols.low .. ps.rsOutputCols.high:
+    if cmp(attrName, ps.rsOutputCols[i].columnType.name) == 0:
+      rowidx = i
+      break;
+      
+  if rowidx == -1:
+    raise newException(IOError, "lookupRowIndexByName: " &
+          " attrName " & attrName & " not found!")
+    {.effects.}
+  rowidx
 
 proc getAttributeValue( obj : OracleObjRef, idx : int ) : ptr dpiData = 
   ## internal getter for fetching the value of a type(dbObject) 
@@ -1556,12 +1566,21 @@ proc getAttributeValue( obj : OracleObjRef, idx : int ) : ptr dpiData =
   
   return obj.bufferedColumn[idx]
 
-proc getCollection( row : DpiRow, colIdx : int) : OracleCollectionRef =
+template getCollection( row : DpiRow, colIdx : int) : OracleCollectionRef =
+  ## experimental getter for resultSet collection handling
+  ## the object reference returned must be freed (see template withOracleCollection)
+  var result = OracleCollectionRef()
+  row.rset.rsOutputCols[colIdx].rObjectTypeRef.initOracleCollection(result)
+  result.objHdl = row[colIdx].value.asObject
+  result 
+
+template getColumnIndexByName(rset : ptr ResultSet, colname : string) : int =
+  rset.lookupRowIndexByName
+
+template getCollection( row : DpiRow, colName : string ) : OracleCollectionRef =
   ## experimental getter for resultSet collection handling
   ## the object reference returned must be freed
-  result = OracleCollectionRef()
-  row.rset.rsOutputCols[colIdx].rObjectTypeRef.initOracleCollection(result)
-  result.objHdl = row[colIdx].value.asObject 
+  getCollection(row,row.rset.lookupRowIndexByName(colname))
 
 # proc getObjectAttributeValue( handle : ptr dpiObject, 
 #                              idx : int, 
@@ -1635,8 +1654,6 @@ proc copyOracleColl*( obj : OracleCollectionRef ) : OracleCollectionRef =
     ## which must be released if no longer needed 
     result = OracleCollectionRef()
     result.objType = obj.objType
-    echo "copycoll_objType " & $obj.objType.isNil
-    echo "copyColl_childtype " & $obj.objType.childObjectType.isNil
 
     result.objType.childObjectType = obj.objType.childObjectType
  
@@ -1645,10 +1662,6 @@ proc copyOracleColl*( obj : OracleCollectionRef ) : OracleCollectionRef =
         getErrstr(obj.objType.relatedConn.context.oracleContext))
       {.effects.}
 
-    echo "copycoll_objType res " & $result.objType.isNil
-    echo "copyColl_childtype res " & $result.objType.childObjectType.isNil
-
-    echo "copyOracleColl called"
     result.setupObjBufferedColumn
     result.elementHelper = cast[ptr dpiData](alloc0( sizeof(dpiData) ))
     result.incarnatedChilds = newTable[int, OracleObjRef]()
@@ -2494,33 +2507,28 @@ when isMainModule:
         
         for row in nSelectRset.resultSetRowIterator:       
              echo $row[0].fetchString
-             var cr = row.getCollection(1)
+             var cr = row.getCollection("TESTCOL")
              var colsize = cr.fetchCollectionSize
              var objRef : OracleObjRef
              echo "collection fetched. numElements " & $colsize
+            
+             var hexcolumn : string
+              
              withOracleCollection(cr):
                for i in 0..colsize-1:
-                 # FIXME: consolidate attr access
-                 echo $cr[i].fetchDouble("NUMBERVALUE")
-                 echo $cr[i].fetchString("STRINGVALUE")
-                 echo $cr[i].fetchString("FIXEDCHARVALUE")
-                 echo $cr[i].fetchDateTime("DATEVALUE")
-                 echo $cr[i].fetchDateTime("TIMESTAMPVALUE")
-                 echo $cr[i].fetchBytes("RAWVALUE")
-                 # access object attributes by attrName
+                 var hcol = cr[i].fetchBytes("RAWVALUE")
+                 if hcol.isSome:
+                   hexcolumn = hcol.get.hex2str
+                 else:
+                   hexcolumn = $hcol
+                 echo $cr[i].fetchDouble("NUMBERVALUE") & " | " &
+                   $cr[i].fetchString("STRINGVALUE")  & " | " &
+                   $cr[i].fetchString("FIXEDCHARVALUE")  & " | " &
+                   $cr[i].fetchDateTime("DATEVALUE")  & " | " &
+                   $cr[i].fetchDateTime("TIMESTAMPVALUE")  & " | " & hexcolumn
              
-             # TODO: consolidate api. difference between parameter access:
-             # (readout binds: paramTypeRef[rowidx]->ptr dpiData ) and resultset:
-             # dpiRow[columnIndex] -> dpiData
-             # and preparedStatement[columnIndex]->paramTypeRef 
-             # with the dpiDataPointer.asObject->ptr dpiObject and the objectType
-             # its possible to readout the attributes-tree 
-             # dpiObject_getAttributeValue -> raw_attributes
-             # dpiObject_getElementValue -> next nested obj
-             # FIXME: metadata missing for dpiRow/dpiRowElement
-             # -> lowlevel API on dpiObjects / dpiAttributes
-             # -> highlevel API which returns populated OracleObjRef/OracleCollectionRef
-
+                 # access object attributes by attrName or attribute column index
+             
       # TODO: try to filter against a nested-table object
 
       # var demoCallAggr2 = osql""" select * from HR.NDEMO """
