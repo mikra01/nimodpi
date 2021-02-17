@@ -99,39 +99,9 @@ proc `$`*(p: ptr dpiRowId): string =
   discard dpiRowid_getStringValue(p,str.addr,cstringlen.addr)
   return $str
 
-template `$`*(p: Option[string]): string =
+template `$`*[T]( p : Option[T] ) : string = 
   if p.isNone:
     "<dbNull>"
   else:
     $p.get
 
-template `$`*(p: Option[int64]): string =
-  if p.isNone:
-    "<dbNull>"
-  else:
-    $p.get    
-
-template `$`*(p: Option[uint64]): string =
-  if p.isNone:
-    "<dbNull>"
-  else:
-    $p.get    
-
-template `$`*(p: Option[float32]): string =
-  if p.isNone:
-    "<dbNull>"
-  else:
-    $p.get    
-            
-template `$`*(p: Option[float64]): string =
-  if p.isNone:
-    "<dbNull>"
-  else:
-    $p.get    
-
-template `$`*(p: Option[DateTime]): string =
-  if p.isNone:
-    "<dbNull>"
-  else:
-    $p.get    
-    
