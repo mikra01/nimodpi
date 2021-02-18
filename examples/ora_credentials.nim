@@ -8,3 +8,4 @@ const
                              (CONNECT_DATA =(SERVER = DEDICATED)
                              (SERVICE_NAME = XEPDB1 )
                             ))"""
+    # if there is a local Oracle XE instance running, let this file unchanged
