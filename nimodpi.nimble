@@ -4,6 +4,7 @@ author = "Michael Krauter"
 description = " oracle odpi-c wrapper "
 license = "MIT"
 skipDirs = @["demo"]
+srcDir = "src"
 
 # Dependencies
 requires "nim >= 1.2.6"
