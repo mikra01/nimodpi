@@ -1,6 +1,7 @@
 import os
 import nimterop/[build, cimport]
 
+
 # Copyright (c) 2019 Michael Krauter
 # MIT-license - please see the LICENSE-file for details.
 
@@ -10,28 +11,27 @@ nim oracle wrapper (ODPI-C).
 include this file into your project if you like to access an oracle database
 (no lib, static binding so far).
 
-This is the low-level wrapper part; so no extra convenience glue logic provided.
-Original API-names preserved (structs and function) for easier linkage with the original documentation.
+This is the low-level wrapper part (C lang); so no extra convenience glue logic provided.
 
-if you like a higher-level wrapper, include db_oracle into your project.
+if you like a nimish access layer, include db_oracle into your project.
 
 ]#
 
 const
   baseDir = currentSourcePath.parentDir()/"build"
-
   srcDir = baseDir/"odpi"
 
 static:
   cDebug()
-  cDisableCaching()
+  # cDisableCaching()
 
   gitPull("https://github.com/oracle/odpi.git", outdir = srcDir,
       plist = """
 include/*.h
 embed/*.c
 src/*
-""", checkout = "tags/v4.0.2")
+""", checkout = "master" )
+  # "tags/v4.0.2"
   # if a specific version is desired, pull the odpi version manually into the 
   # subdirectory /build/
 
@@ -110,35 +110,7 @@ cOverride:
                                       SYSKMT = DPI_MODE_AUTH_SYSKMT,
                                       SYSRAC = DPI_MODE_AUTH_SYSRAC
 
-    DpiOracleType* {.pure.} = enum OTNONE = DPI_ORACLE_TYPE_NONE,
-                                OTVARCHAR = DPI_ORACLE_TYPE_VARCHAR,
-                                OTNVARCHAR = DPI_ORACLE_TYPE_NVARCHAR,
-                                OTCHAR = DPI_ORACLE_TYPE_CHAR,
-                                OTNCHAR = DPI_ORACLE_TYPE_NCHAR,
-                                OTROWID = DPI_ORACLE_TYPE_ROWID,
-                                OTRAW = DPI_ORACLE_TYPE_RAW,
-                                OTNATIVE_FLOAT = DPI_ORACLE_TYPE_NATIVE_FLOAT,
-                                OTNATIVE_DOUBLE = DPI_ORACLE_TYPE_NATIVE_DOUBLE,
-                                OTNATIVE_INT = DPI_ORACLE_TYPE_NATIVE_INT,
-                                OTNUMBER = DPI_ORACLE_TYPE_NUMBER,
-                                OTDATE = DPI_ORACLE_TYPE_DATE,
-                                OTTIMESTAMP = DPI_ORACLE_TYPE_TIMESTAMP,
-                                OTTIMESTAMP_TZ = DPI_ORACLE_TYPE_TIMESTAMP_TZ,
-                                OTTIMESTAMP_LTZ = DPI_ORACLE_TYPE_TIMESTAMP_LTZ,
-                                OTINTERVAL_DS = DPI_ORACLE_TYPE_INTERVAL_DS,
-                                OTINTERVAL_YM = DPI_ORACLE_TYPE_INTERVAL_YM,
-                                OTCLOB = DPI_ORACLE_TYPE_CLOB,
-                                OTNCLOB = DPI_ORACLE_TYPE_NCLOB,
-                                OTBLOB = DPI_ORACLE_TYPE_BLOB,
-                                OTBFILE = DPI_ORACLE_TYPE_BFILE,
-                                OTSTMT = DPI_ORACLE_TYPE_STMT,
-                                OTBOOLEAN = DPI_ORACLE_TYPE_BOOLEAN,
-                                OTOBJECT = DPI_ORACLE_TYPE_OBJECT,
-                                OTLONG_VARCHAR = DPI_ORACLE_TYPE_LONG_VARCHAR,
-                                OTLONG_RAW = DPI_ORACLE_TYPE_LONG_RAW,
-                                OTNATIVE_UINT = DPI_ORACLE_TYPE_NATIVE_UINT,
-                                OTMAX = DPI_ORACLE_TYPE_MAX
-
+    
     DpiNativeCType* {.pure.} = enum INT64 = DPI_NATIVE_TYPE_INT64,
                                 UINT64 = DPI_NATIVE_TYPE_UINT64,
                                 FLOAT = DPI_NATIVE_TYPE_FLOAT,
