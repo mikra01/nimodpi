@@ -99,7 +99,7 @@ proc `$`*(p: ptr dpiRowId): string =
   discard dpiRowid_getStringValue(p,str.addr,cstringlen.addr)
   return $str
 
-template `$`*[T]( p : Option[T] ) : string = 
+template `$`[T]( p : Option[T] ) : string = 
   if p.isNone:
     "<dbNull>"
   else:

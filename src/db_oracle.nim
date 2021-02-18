@@ -1,6 +1,6 @@
 import os,times,options,strformat,tables
 import nimodpi
-export nimodpi
+export nimodpi,options
 
 # Copyright (c) 2019 Michael Krauter
 # MIT-license - please see the LICENSE-file for details.
@@ -1138,7 +1138,7 @@ template executeStatement*(prepStmt: var PreparedStatement,
   if prepStmt.boundParams.len > 0:
     updateBindParams(prepStmt)
 
-  prepStmt.executeAndInitResultSet(dpiMode,false)
+  executeAndInitResultSet(prepStmt,dpiMode,false)
   outRs = cast[ResultSet](prepStmt)
 
 template executeBulkUpdate(prepStmt: var PreparedStatement,
