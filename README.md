@@ -21,8 +21,8 @@ See /demo/demo.nim for some direct ODPI-C examples.
 The subdir /demo also contains an example how sqlplus could be utilised for script execution.
 
 ### Remarks
-upgraded to Nim Compiler Version 1.2.6, ODPI-C 4.0.2 and nimterop 0.6.11. The ODPI-C version
-is within the static section of nimodpi.nim (nimterop control file)
+upgraded to Nim Compiler Version 1.4.2, ODPI-C 4.1.0 and nimterop 0.6.11. The ODPI-C version
+is hardcoded within the static section of nimodpi.nim (nimterop control file)
 The NIM-API could be subject of change.
 
 ### Oracle XE installation
@@ -64,8 +64,8 @@ run the nim demo with "nimble db_oracle".
 this demo executes some DDL and performs a cleanup.
 
 ### Todo
-direct bindings almost completed except SODA; 
+direct bindings almost completed except SODA/BLOB/VARRAY; 
 the nimish abstraction layer (db_oracle) is functional but more examples needed.
-next steps would be provide documented examples and cleanup of some quirks.
+next steps would be provide documented examples.
 
 Comments, bug reports and PR´s appreciated.

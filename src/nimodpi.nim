@@ -13,7 +13,8 @@ include this file into your project if you like to access an oracle database
 
 This is the low-level wrapper part (C lang); so no extra convenience glue logic provided.
 
-if you like a nimish access layer, include db_oracle into your project.
+if you like a nimish access layer, include db_oracle instead into your project. see
+the /examples directory
 
 ]#
 
@@ -30,10 +31,7 @@ static:
 include/*.h
 embed/*.c
 src/*
-""", checkout = "master" )
-  # "tags/v4.0.2"
-  # if a specific version is desired, pull the odpi version manually into the 
-  # subdirectory /build/
+""", checkout = "tags/v4.1.0" )
 
 cIncludeDir(srcDir/"include")
 
