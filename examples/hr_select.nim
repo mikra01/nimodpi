@@ -66,12 +66,28 @@ withPreparedStatement(pstmt):
       # example of value retrieval by columnname or index
       # the column of the row is accessed by colnum or name
       echo $row[0].fetchRowId &
-      " " & $row[1].fetchDouble &
+      " " & $row[1].fetchInt64 &
+      " " & $row["FIRST_NAME"].fetchString &
+      " " & $row["LAST_NAME"].fetchString &
+      " " & $row["EMAIL"].fetchString &
+      " " & $row[10].fetchInt64 &  # manager_id
+      " " & $row[11].fetchInt64    # department_id
+      # columns can be accessed by column-index or column_name
+
+  echo "query1 executed - param department_id = 80 "
+  echo "reexecute with param department_id = 10 "
+  # reexecute preparedStatement with a different parameter value
+  param.setInt64(some(10.int64))
+  executeStatement(pstmt, rs)
+
+  for row in rs.resultSetRowIterator:
+    # retrieve column values by columnname or index
+    echo $row[0].fetchRowId &
+      " " & $row["EMPLOYEE_ID"].fetchInt64 &
       " " & $row["FIRST_NAME"].fetchString &
       " " & $row["LAST_NAME"].fetchString &
       " " & $row[10].fetchInt64 &
-      " " & $row[11].fetchInt64 
-      # columns can be accessed by column-index or column_name
+      " " & $row[11].fetchInt64
 
   conn.releaseConnection
   destroyOracleContext(octx)      
