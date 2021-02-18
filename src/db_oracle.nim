@@ -1,6 +1,6 @@
 import os,times,options,strformat,tables
 import nimodpi
-export nimodpi,options
+export nimodpi
 
 # Copyright (c) 2019 Michael Krauter
 # MIT-license - please see the LICENSE-file for details.

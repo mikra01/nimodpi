@@ -99,9 +99,51 @@ proc `$`*(p: ptr dpiRowId): string =
   discard dpiRowid_getStringValue(p,str.addr,cstringlen.addr)
   return $str
 
-template `$`[T]( p : Option[T] ) : string = 
+# template `$`[T]( p : Option[T] ) : string = 
+# outcommented because symbol clash with options module
+#  if p.isNone:
+#    "<dbNull>"
+#  else:
+#    $p.get
+
+proc `$`*(p: Option[seq[byte]]): string =
   if p.isNone:
     "<dbNull>"
   else:
     $p.get
 
+proc `$`*(p: Option[string]): string =
+  if p.isNone:
+    "<dbNull>"
+  else:
+    $p.get
+
+proc `$`*(p: Option[int64]): string =
+  if p.isNone:
+    "<dbNull>"
+  else:
+    $p.get    
+
+proc `$`*(p: Option[uint64]): string =
+  if p.isNone:
+    "<dbNull>"
+  else:
+    $p.get    
+
+proc `$`*(p: Option[float32]): string =
+  if p.isNone:
+    "<dbNull>"
+  else:
+    $p.get    
+            
+proc `$`*(p: Option[float64]): string =
+  if p.isNone:
+    "<dbNull>"
+  else:
+    $p.get    
+
+proc `$`*(p: Option[DateTime]): string =
+  if p.isNone:
+    "<dbNull>"
+  else:
+    $p.get
