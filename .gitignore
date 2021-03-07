@@ -1,4 +1,6 @@
 nimcache/
 build/
 *.exe
+*.dot
+*.deps
 democredentials.nim
