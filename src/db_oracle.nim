@@ -272,15 +272,29 @@ type
     incarnatedChilds : TableRef[int, OracleObjRef]
     # tracks incarnated objects for auto-disposal 
 type
-  Lob* = object
-    ## TODO: implement
-    lobtype : ParamType
+  LobRef* = ref object of RootObj
+    relatedConn : OracleConnection
+    lobtype* : DpiLobType
+    size* : uint64
     chunkSize : uint32
-    lobref : ptr dpiLob
+    #buffer chunk size
+    readIdx : uint64
+    # index for read operations
+    writeIdx : uint64
+    # index for write operations
+    dpiLobref : ptr dpiLob
 
-  DpiLobType* = enum CLOB = DpiOracleType.OTCLOB,
-                     NCLOB = DpiOracleType.OTNCLOB,
-                     BLOB = DpiOracleType.OTBLOB
+  CLobRef* = ref object of LobRef
+  # character lob type 
+  BLobRef* = ref object of LobRef
+  # binary lob type  
+
+  LobPtr* = int32
+
+  DpiLobType* = enum OTCLOB = DpiOracleType.OTCLOB,
+                     OTNCLOB = DpiOracleType.OTNCLOB,
+                     OTBLOB = DpiOracleType.OTBLOB,
+                     OTBFILE = DpiOracleType.OTBFILE
                 
 include odpi_obj2string
 # contains some utility templates for object to string conversion (debug)
@@ -1884,16 +1898,38 @@ proc setCollection*(param : ParamTypeRef, rownum : int, value : OracleCollection
     {.effects.}   
 
 
-proc newTempLob*( conn : var OracleConnection, 
+proc newTempLob( conn : var OracleConnection, 
                   lobtype : DpiLobType, 
-                  outlob : var Lob )  = 
-  ## creates a new temp lob
+                  outlob : LobRef )  = 
+  ## creates a new temp lob. call releaseLob if it's no longer in use
+  ## or use the "withOracleLob" template
   if DpiResult(dpiConn_newTempLob(conn.connection,
                lobtype.ord.dpiOracleTypeNum,
-               addr(outlob.lobref))).isFailure:
+               addr(outlob.dpiLobref))).isFailure:
     raise newException(IOError, "createConnection: " &
       getErrstr(conn.context.oracleContext))
     {.effects.}
+
+proc releaseLob*( lobref : LobRef ) = 
+  discard    
+
+proc size*(lobref : LobRef ) : uint64 = 
+  discard
+
+template withOracleLob*( obj : LobRef, body: untyped) =
+  ## releases the lob  
+  ## after leaving the block. exceptions are not catched.
+  try:
+    body
+  finally:
+    obj.releaseLob
+
+iterator lobChunkWriter*() : LobPtr = 
+  discard 
+
+iterator lobChunkReader*() : LobPtr =
+  discard 
+
 
 # TODO: varray,blob,clob and AQ support
 # TODO: FIXME: remove Objects bufferedColumn quirk
