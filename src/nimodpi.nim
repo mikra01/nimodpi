@@ -31,7 +31,7 @@ static:
 include/*.h
 embed/*.c
 src/*
-""", checkout = "tags/v4.1.0" )
+""", checkout = "tags/v4.3.0" )
 
 cIncludeDir(srcDir/"include")
 
