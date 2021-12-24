@@ -1316,15 +1316,16 @@ template withPreparedStatement*(pstmt: var PreparedStatement, body: untyped) {.d
 proc executeDDL*(conn: var OracleConnection,
                  sql: var SqlQuery,
                  dpiMode: uint32 = DpiModeExec.DEFAULTMODE.ord) =
-  ## convenience template to execute a ddl statement (no results returned)
+  ## convenience template to execute a ddl statement or pl/sql block 
+  ## without parameters ( no results returned )
   var rs: ResultSet
   var p: PreparedStatement
   newPreparedStatement(conn, sql, p)
 
   withPreparedStatement(p):
     discard dpiStmt_getInfo(p.pStmt, p.statementInfo.addr)
-    if p.statementInfo.isDDL == 1:
-      p.executeStatement(rs, dpiMode)
+    if p.statementInfo.isPLSQL == 1.int or p.statementInfo.isDML == 0.int:
+        p.executeStatement(rs, dpiMode)
     else:
       raise newException(IOError, "executeDDL: " &
         " statement is no DDL. please use executeStatement instead.")
@@ -1903,6 +1904,7 @@ include setfetchtypes
 
 when isMainModule:
   ## the HR Schema is used (XE) for the following tests
+  ## and the connection is local sys. so all objects need to be schema prefixed
   const
     oracleuser: string = "sys"
     pw: string = "<pwd>"
@@ -2520,6 +2522,40 @@ when isMainModule:
   var dropDemoObj : SqlQuery = osql" drop type HR.DEMO_OBJ "
   conn.executeDDL(dropDemoObj)
 
+  echo "begin execute immediate test"
+  # test for issue: Generic execute statement missing #7
+  var doExecuteImmediate : SqlQuery = osql"""
+   BEGIN EXECUTE IMMEDIATE 'CREATE TABLE hr.ora_bench_table (key VARCHAR2(32) PRIMARY KEY, 
+   data VARCHAR2(4000), no_partitions NUMBER DEFAULT 32, partition_key NUMBER(5)) 
+   PARTITION BY RANGE (partition_key) 
+    (PARTITION p00000 VALUES LESS THAN (1), PARTITION p00001 VALUES LESS THAN (2), 
+     PARTITION p00002 VALUES LESS THAN (3), PARTITION p00003 VALUES LESS THAN (4), 
+     PARTITION p00004 VALUES LESS THAN (5), PARTITION p00005 VALUES LESS THAN (6), 
+     PARTITION p00006 VALUES LESS THAN (7), PARTITION p00007 VALUES LESS THAN (8), 
+     PARTITION p00008 VALUES LESS THAN (9), PARTITION p00009 VALUES LESS THAN (10), 
+     PARTITION p00010 VALUES LESS THAN (11), PARTITION p00011 VALUES LESS THAN (12), 
+     PARTITION p00012 VALUES LESS THAN (13), PARTITION p00013 VALUES LESS THAN (14), 
+     PARTITION p00014 VALUES LESS THAN (15), PARTITION p00015 VALUES LESS THAN (16), 
+     PARTITION p00016 VALUES LESS THAN (17), PARTITION p00017 VALUES LESS THAN (18), 
+     PARTITION p00018 VALUES LESS THAN (19), PARTITION p00019 VALUES LESS THAN (20), 
+     PARTITION p00020 VALUES LESS THAN (21), PARTITION p00021 VALUES LESS THAN (22), 
+     PARTITION p00022 VALUES LESS THAN (23), PARTITION p00023 VALUES LESS THAN (24), 
+     PARTITION p00024 VALUES LESS THAN (25), PARTITION p00025 VALUES LESS THAN (26), 
+     PARTITION p00026 VALUES LESS THAN (27), PARTITION p00027 VALUES LESS THAN (28), 
+     PARTITION p00028 VALUES LESS THAN (29), PARTITION p00029 VALUES LESS THAN (30), 
+     PARTITION p00030 VALUES LESS THAN (31), PARTITION p00031 VALUES LESS THAN (32))'; 
+     EXECUTE IMMEDIATE 'CREATE TRIGGER hr.ora_bench_table_before_insert 
+       BEFORE INSERT ON hr.ora_bench_table 
+         FOR EACH ROW BEGIN :new.partition_key := MOD (ASCII (SUBSTR 
+           (:new.key, 1, 1)) * 251 + ASCII (SUBSTR (:new.key, 2, 1)), :new.no_partitions); END 
+             ora_bench_table_before_insert;'; END;
+  """
+ 
+  conn.executeDDL(doExecuteImmediate)
 
+  var dropObj : SqlQuery = osql"drop table hr.ora_bench_table"
+  conn.executeDDL(dropObj)
+
+  echo "end execute immediate test"
   conn.releaseConnection
   destroyOracleContext(octx)
