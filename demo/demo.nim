@@ -1,4 +1,4 @@
-import ../nimodpi
+import ../src/nimodpi
 import strutils
 import os
 import times

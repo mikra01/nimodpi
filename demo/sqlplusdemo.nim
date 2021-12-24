@@ -1,4 +1,4 @@
-import ../nimodpi
+import ../src/nimodpi
 import os
 import osproc
 import streams
