@@ -4,3 +4,4 @@ build/
 *.dot
 *.deps
 democredentials.nim
+*.code-workspace

@@ -31,7 +31,7 @@ static:
 include/*.h
 embed/*.c
 src/*
-""", checkout = "tags/v4.1.0" )
+""", checkout = "tags/v4.3.0" )
 
 cIncludeDir(srcDir/"include")
 
@@ -109,19 +109,6 @@ cOverride:
                                       SYSRAC = DPI_MODE_AUTH_SYSRAC
 
     
-    DpiNativeCType* {.pure.} = enum INT64 = DPI_NATIVE_TYPE_INT64,
-                                UINT64 = DPI_NATIVE_TYPE_UINT64,
-                                FLOAT = DPI_NATIVE_TYPE_FLOAT,
-                                DOUBLE = DPI_NATIVE_TYPE_DOUBLE,
-                                BYTES = DPI_NATIVE_TYPE_BYTES,
-                                TIMESTAMP = DPI_NATIVE_TYPE_TIMESTAMP,
-                                INTERVAL_DS = DPI_NATIVE_TYPE_INTERVAL_DS,
-                                INTERVAL_YM = DPI_NATIVE_TYPE_INTERVAL_YM,
-                                LOB = DPI_NATIVE_TYPE_LOB,
-                                OBJECT = DPI_NATIVE_TYPE_OBJECT,
-                                STMT = DPI_NATIVE_TYPE_STMT,
-                                BOOLEAN = DPI_NATIVE_TYPE_BOOLEAN,
-                                ROWID = DPI_NATIVE_TYPE_ROWID
     DpiModeExec* {.pure.} = enum DEFAULTMODE = DPI_MODE_EXEC_DEFAULT,
                                       DESCRIBE_ONLY = DPI_MODE_EXEC_DESCRIBE_ONLY,
                                       COMMIT_ON_SUCCESS = DPI_MODE_EXEC_COMMIT_ON_SUCCESS,

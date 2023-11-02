@@ -25,7 +25,6 @@ export nimodpi
     - only the basic types are implemented (numeric, rowid, varchar2, timestamp)
     - pl/sql procedure exploitation is possible with in/out and inout-parameters
     - consuming refcursor (out) is also possible (see examples at the end of the file)
-    - TODO: implement LOB/BLOB handling
     -
     - designing a vendor generic database API often leads to
       clumpsy workaround solutions.
@@ -42,9 +41,9 @@ export nimodpi
       are not freed unless destroy is called.
     - ResultSets are used to consume query results and can be reused.
     - it provides a row-iterator-style
-    - API and a direct access API of the buffer (by index)
+    - API and a direct access API of the ODPI-C buffer (by index)
     -
-    - some additional hints: do not share connection/preparedStatement
+    - some additional hints: do not share the db_oracle instances
       between different threads.
     - the context can be shared between threads according to the
       ODPI-C documentation (untested).
@@ -200,6 +199,14 @@ const
   ZonedTimestampTypeParam* = (DpiNativeCType.TIMESTAMP,
                             DpiOracleType.OTTIMESTAMP_TZ,
                             1,false,0.int8,"",0.int16,0.uint8).ColumnType
+  ObjectColumnTypeParam* = (DpiNativeCType.OBJECT, DpiOracleType.OTOBJECT,0, 
+                              false, 0.int8, "",0.int16,0.uint8).ColumnType
+  BlobColumnTypeParam* = (DpiNativeCType.LOB, DpiOracleType.OTBLOB,0,false, 0.int8,
+   "",0.int16,0.uint8).ColumnType 
+  ClobColumnTypeParam* = (DpiNativeCType.LOB, DpiOracleType.OTCLOB,0,false, 0.int8,
+   "",0.int16,0.uint8).ColumnType 
+  BfileColumnTypeParam* = (DpiNativeCType.LOB, DpiOracleType.OTBFILE,0,false, 0.int8,
+   "",0.int16,0.uint8).ColumnType 
   ## predefined parameter for the Timestamp with Timezone type (OTTIMESTAMP_TZ)
   # FIXME: populate scale, precision for fp-types                                                   
 
@@ -245,10 +252,10 @@ type
     ## of the ResultSet
 
   OracleObjRef* = ref object of RootObj
-    ## thin wrapper of an object instance
+    ## thin wrapper of an oracle object instance
     ## related to a specific type handle. this kind of
     ## object need to be disposed if no longer needed.
-    ## typically used for both write and operations (client->database).
+    ## typically used for both write and read operations.
     objType : OracleObjTypeRef
     objHdl : ptr dpiObject
     # the odpi-c object handle. this ref needs to be freed if no
@@ -272,24 +279,24 @@ type
     incarnatedChilds : TableRef[int, OracleObjRef]
     # tracks incarnated objects for auto-disposal 
 type
-  LobRef* = ref object of RootObj
+  OracleLobRef* = ref object of RootObj
+    ## thin wrapper of a oracle lob type
     relatedConn : OracleConnection
     lobtype* : DpiLobType
     size* : uint64
+    ## the total size in bytes of the lob
     chunkSize : uint32
-    #buffer chunk size
+    ## the ODPI-C chunkSize of the buffer 
+    isOpen : bool
+    # internal flag if the lob is opened 
     readIdx : uint64
-    # index for read operations
+    # internal index for read operations
     writeIdx : uint64
-    # index for write operations
-    dpiLobref : ptr dpiLob
+    # internal index for write operations
+    objHdl : ptr dpiLob
+    # the native handle
 
-  CLobRef* = ref object of LobRef
-  # character lob type 
-  BLobRef* = ref object of LobRef
-  # binary lob type  
-
-  LobPtr* = int32
+  LobBufferPtr* = ptr byte
 
   DpiLobType* = enum OTCLOB = DpiOracleType.OTCLOB,
                      OTNCLOB = DpiOracleType.OTNCLOB,
@@ -337,6 +344,10 @@ template `[]`*(row: DpiRow, index : int ): ptr dpiData =
 template toObject*( val : ptr dpiData) : ptr dpiData =
   ## FIXME: eval if needed
   val.value.asObject
+
+template toLOB*( val : ptr dpiData ) : ptr dpiLob =
+  ## retrieves the lob pointer out of the dpiData structure
+  val.value.asLOB  
 
 template `[]`(data: ptr dpiData, idx: int): ptr dpiData =
   ## direct access of a column's cell within the columnbuffer by index.
@@ -684,7 +695,6 @@ proc initObjectTypeHdl(objType : OracleObjTypeRef,  hdl : ptr dpiObjectType ) =
   # alloc mem for raw fetching attribute values
 
   #FIXME: rework. at the moment no Object-Type-Attributes possible
-
 
 
 template newVar(ps: var PreparedStatement, param: ParamTypeRef) =
@@ -1330,15 +1340,16 @@ template withPreparedStatement*(pstmt: var PreparedStatement, body: untyped) {.d
 proc executeDDL*(conn: var OracleConnection,
                  sql: var SqlQuery,
                  dpiMode: uint32 = DpiModeExec.DEFAULTMODE.ord) =
-  ## convenience template to execute a ddl statement (no results returned)
+  ## convenience template to execute a ddl statement or pl/sql block 
+  ## without parameters ( no results returned )
   var rs: ResultSet
   var p: PreparedStatement
   newPreparedStatement(conn, sql, p)
 
   withPreparedStatement(p):
     discard dpiStmt_getInfo(p.pStmt, p.statementInfo.addr)
-    if p.statementInfo.isDDL == 1:
-      p.executeStatement(rs, dpiMode)
+    if p.statementInfo.isPLSQL == 1.int or p.statementInfo.isDML == 0.int:
+        p.executeStatement(rs, dpiMode)
     else:
       raise newException(IOError, "executeDDL: " &
         " statement is no DDL. please use executeStatement instead.")
@@ -1347,6 +1358,7 @@ proc executeDDL*(conn: var OracleConnection,
 proc introspectObjectType( base: OracleObjTypeRef , attr : ptr dpiObjectAttr ) : OracleObjTypeRef =
   ## introspects the attribute - raises exception if the attribute is not type: OBJECT
   ## or the object's column was already introspected
+  # TODO: implement
   discard
   
 
@@ -1517,6 +1529,15 @@ proc releaseOracleCollection*(obj : OracleCollectionRef ) =
 
   obj.incarnatedChilds.clear
 
+proc releaseOracleLob*(obj : OracleLobRef ) =
+  ## releases the lobs internal references 
+  if obj.isOpen:
+    if DpiResult(dpiLob_closeResource(obj.objHdl)).isFailure:
+      raise newException(IOError, "releaseOracleLob: " &
+        getErrstr(obj.relatedConn.context.oracleContext))
+      {.effects.}
+    obj.isOpen = false
+
 template lookupObjAttrIndexByName( objType : OracleObjTypeRef, attrName : string ) : int =
   ## used by the attributeValue getter/setter to obtain the index by name.
   ## the attrName must be always UPPERCASE.
@@ -1636,6 +1657,24 @@ proc copyOracleColl*( obj : OracleCollectionRef ) : OracleCollectionRef =
     result.setupObjBufferedColumn
     result.elementHelper = cast[ptr dpiData](alloc0( sizeof(dpiData) ))
     result.incarnatedChilds = newTable[int, OracleObjRef]()
+
+proc copyOracleLob*( obj : OracleLobRef ) : OracleLobRef =
+  ## copies a lob and returns a new independent new one
+  ## which must be released if no longer needed 
+  result =  OracleLobRef()
+  result.lobtype = obj.lobtype
+
+  if DpiResult(dpiLob_copy(obj.objHdl,result.objHdl.addr)).isFailure:
+    raise newException(IOError, "copyOracleLob: " &
+      getErrstr(obj.relatedConn.context.oracleContext))
+    {.effects.}    
+
+  result.relatedConn = obj.relatedConn
+  result.size = obj.size 
+  result.chunkSize = obj.chunkSize 
+  result.readIdx = 0
+  result.writeIdx = 0 
+  result.isOpen = false
 
 template withOracleObjType*( objtype : OracleObjTypeRef, body: untyped) =
   ## releases the objectTypes resources after leaving
@@ -1897,26 +1936,50 @@ proc setCollection*(param : ParamTypeRef, rownum : int, value : OracleCollection
         getErrstr(value.objType.relatedConn.context.oracleContext))
     {.effects.}   
 
+proc setLob*(param : ParamTypeRef, rownum : int, value : OracleLobRef ) =
+  ## sets a bind parameter (variable) with value type: Lob  
+  if DpiResult(dpiVar_setFromLob(param.paramVar,
+                                    rownum.uint32,
+                                    value.objHdl)).isFailure:
+    raise newException(IOError, "setCollection: " &
+        getErrstr(value.relatedConn.context.oracleContext))
+    {.effects.}   
+
 
 proc newTempLob( conn : var OracleConnection, 
-                  lobtype : DpiLobType, 
-                  outlob : LobRef )  = 
-  ## creates a new temp lob. call releaseLob if it's no longer in use
+                  lobtype : DpiLobType ) : OracleLobRef  = 
+  ## creates a new temp lob. call 
+  ## releaseLob if it's no longer in use
   ## or use the "withOracleLob" template
+  result =  OracleLobRef()
+  result.relatedConn = conn
+  result.lobtype = lobtype
+  result.isOpen = false
+  result.size = 0
+
   if DpiResult(dpiConn_newTempLob(conn.connection,
                lobtype.ord.dpiOracleTypeNum,
-               addr(outlob.dpiLobref))).isFailure:
-    raise newException(IOError, "createConnection: " &
+               addr(result.objHdl))).isFailure:
+    raise newException(IOError, "newTempLob: " &
+      getErrstr(conn.context.oracleContext))
+    {.effects.}
+  
+  if DpiResult(dpiLob_getChunkSize(result.objHdl,
+                                   result.chunkSize.addr)).isFailure:
+    raise newException(IOError, "newTempLob - getChunkSize " &
       getErrstr(conn.context.oracleContext))
     {.effects.}
 
-proc releaseLob*( lobref : LobRef ) = 
+proc releaseLob*( lobref : OracleLobRef ) = 
   discard    
 
-proc size*(lobref : LobRef ) : uint64 = 
-  discard
-
-template withOracleLob*( obj : LobRef, body: untyped) =
+proc size*(lobref : OracleLobRef ) : uint64 = 
+  if DpiResult(dpiLob_getSize(lobref.objHdl,result.addr)).isFailure:
+    raise newException(IOError, "size(lob):" &
+      getErrstr(lobref.relatedConn.context.oracleContext))
+    {.effects.}
+  
+template withOracleLob*( obj : OracleLobRef, body: untyped) =
   ## releases the lob  
   ## after leaving the block. exceptions are not catched.
   try:
@@ -1924,15 +1987,23 @@ template withOracleLob*( obj : LobRef, body: untyped) =
   finally:
     obj.releaseLob
 
-iterator lobChunkWriter*() : LobPtr = 
+iterator lobChunkWriter*() : LobBufferPtr =
+  ## retrieve chunksize int dpiLob_getChunkSize(dpiLob *lob, uint32_t *size)
+  ## call dpiLob_openResource(dpiLob *lob)
+  ## int dpiLob_writeBytes(dpiLob *lob, uint64_t offset, const char *value, uint64_t valueLength)
+  ## dpiLob_closeResource() (after that commit can be executed) 
   discard 
 
-iterator lobChunkReader*() : LobPtr =
+iterator lobChunkReader*() : LobBufferPtr =
+  ## retrieve chunksize int dpiLob_getChunkSize(dpiLob *lob, uint32_t *size)
+  ## int dpiLob_readBytes(dpiLob *lob, uint64_t offset, uint64_t amount, char *value, uint64_t *valueLength)
+  ## 
   discard 
 
 
 # TODO: varray,blob,clob and AQ support
 # TODO: FIXME: remove Objects bufferedColumn quirk
+# TODO: eval dpiData_setLob (lobs inside objects)
 
 include setfetchtypes
   # includes all fetch/set templates
@@ -2115,8 +2186,9 @@ when isMainModule:
                       , C5 NUMBER(15,5)
                       , C6 TIMESTAMP
                       , C7 HR.DEMO_OBJ
+                      , C8 blob
                       , CONSTRAINT DEMOTESTTABLE_PK PRIMARY KEY(C1)  
-    ) """ 
+    ) lob (C8) store as securefile """ 
  
   conn.executeDDL(ctableq) 
   echo "table hr.demotesttable created"
@@ -2133,7 +2205,7 @@ when isMainModule:
   # window of 9 and 3 rows. 
   # once the preparedStatement is instanciated - 
   # the buffer row window is fixed and can't resized
-
+  # TODO: consolidate API. arraybinds vs objectbinds (array) and bulkbindinterator
   discard pstmt3.addArrayBindParameter(newStringColTypeParam(20),
              BindIdx(1), 10)
   discard pstmt3.addArrayBindParameter(Int64ColumnTypeParam,
@@ -2221,7 +2293,7 @@ when isMainModule:
         # TODO: eval howto set a bound object within existing buffer to dbNull
    
   var selectStmt: SqlQuery = osql"""select c1,c2,rawtohex(c3)
-                                         as c3,c4,c5,c6,c7 from hr.demotesttable"""
+                                         as c3,c4,c5,c6,c7,c8 from hr.demotesttable"""
       # read now the committed stuff
 
   var pstmt4 : PreparedStatement

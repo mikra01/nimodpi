@@ -10,4 +10,4 @@ task oracle_demo, "run db_oracle API examples (with ddl)":
   withDir thisDir():
     switch("run")
     switch("app","console")
-    setCommand "c", "db_oracle.nim"
+    setCommand "c", "src/db_oracle.nim"

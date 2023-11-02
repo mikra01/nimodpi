@@ -23,7 +23,7 @@ proc fetchObjectTypeName(p : var dpiObjectTypeInfo) : string =
 #FIXME: support for dpiAttrInfo
 
 template `$`*(p : var SqlQuery) : string = 
-  $p
+  $(cast[cstring](p))
 
 template `$`*(p: var dpiStmtInfo): string =
   ## string repr of a statementInfo obj
@@ -88,7 +88,14 @@ template `$`*(p:  OracleObjRef ): string =
     ## string representation OracleObjTypeRef
     " obj of type: " & $p.objType 
     # missing: name, isCollection, Attributes
- 
+
+template `$`*(p:  OracleLobRef ): string =
+    ## string representation OracleLobRef
+    " OracleLobRef of type: " & $p.lobtype.ord 
+    & " size: " & $p.size & " chunksize: " & $p.chunkSize
+    & " isOpen: " & $p.isOpen & " readIdx: " & $p.readIdx
+    & " writeIdx: " & $p.writeIdx 
+
 template `$`*(p: ParamTypeRef): string =
   $p.bindPosition & " " & $p.columnType & " rowbuffersize: " & $p.rowbuffersize
 
@@ -97,7 +104,7 @@ proc `$`*(p: ptr dpiRowId): string =
   var str : cstring = "                    " #20 chars
   var cstringlen : uint32
   discard dpiRowid_getStringValue(p,str.addr,cstringlen.addr)
-  return $str
+  result = $str
 
 # template `$`[T]( p : Option[T] ) : string = 
 # outcommented because symbol clash with options module
