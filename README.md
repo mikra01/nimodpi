@@ -25,8 +25,7 @@ See /demo/demo.nim for some direct ODPI-C examples.
 The subdir /demo also contains an example how sqlplus could be utilised for script execution.
 
 ### Remarks
-upgraded to Nim Compiler Version 1.4.2, ODPI-C 4.1.0 and nimterop 0.6.11. The ODPI-C version
-is hardcoded within the static section of nimodpi.nim (nimterop control file)
+upgraded to Nim Compiler Version devel (should also work with latest release), ODPI-C 4.3.0 and nimterop 0.6.11. The ODPI-C version is hardcoded within the static section of nimodpi.nim (nimterop control file) - don't forget to flush nimcache when changing the version between compile runs.
 The NIM-API could be subject of change.
 
 ### Oracle XE installation
