@@ -7,6 +7,10 @@ Oracle ODPI-C wrapper for Nim
 - Oracle Instant Client (see ODPI-C Documentation for details)
 - [nimterop](https://github.com/nimterop/nimterop) 
 
+### announcement
+unfortunately nimterop does not compile with the latest nim release (2.x). Due to that we
+decided to switch to [futhark](https://github.com/PMunch/futhark)
+
 ### how to install
 clone this project directly or use "nimble install nimodpi".
 then import the module "db_oracle" within your project. 
