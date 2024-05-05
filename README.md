@@ -8,8 +8,9 @@ Oracle ODPI-C wrapper for Nim
 - [nimterop](https://github.com/nimterop/nimterop) 
 
 ### announcement
-unfortunately nimterop does not compile with the latest nim release (2.x). Due to that we
-decided to switch to [futhark](https://github.com/PMunch/futhark)
+unfortunately nimterop does not compile with the latest nim release (2.x).
+Nimterop seems stale; due to that we decided to switch to [futhark](https://github.com/PMunch/futhark).
+The actual quickfix present is stay at nim version 1.6.
 
 ### how to install
 clone this project directly or use "nimble install nimodpi".
